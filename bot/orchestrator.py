@@ -9,8 +9,10 @@ from sqlalchemy import text
 from data.db import get_session
 from data.fetcher import DataFetcher
 from data.features import compute_features
+from data.symbol_selector import SymbolSelector
 from exchange.client import BinanceClient
 from exchange.orders import OrderManager
+from exchange.liquidation_feed import LiquidationFeed
 from risk.manager import RiskManager
 from risk.guards import RiskGuards
 from ml.trainer import ModelTrainer
@@ -22,7 +24,6 @@ from strategies.funding_rate import FundingRateStrategy
 from strategies.liquidation_cascade import LiquidationCascadeStrategy
 from strategies.grid import GridStrategy
 from strategies.pair_trading import PairTradingStrategy
-from exchange.liquidation_feed import LiquidationFeed
 
 logger = logging.getLogger(__name__)
 
@@ -46,20 +47,16 @@ class Orchestrator:
         self.risk = RiskManager(cfg["risk"])
         self.guards = RiskGuards(cfg["risk"])
 
-        sc = cfg["strategies"]
-        self.strategies = []
-        if sc["rsi_bb"]["enabled"]:
-            self.strategies.append(RSIBBStrategy({**sc["rsi_bb"], **cfg["risk"]}))
-        if sc["ema_cross"]["enabled"]:
-            self.strategies.append(EMACrossStrategy(sc["ema_cross"]))
-        if sc["funding_rate"]["enabled"]:
-            self.strategies.append(FundingRateStrategy(sc["funding_rate"]))
-        if sc["liquidation_cascade"]["enabled"]:
-            self.strategies.append(LiquidationCascadeStrategy(sc["liquidation_cascade"]))
-        if sc["grid"]["enabled"]:
-            self.strategies.append(GridStrategy(sc["grid"]))
-        if sc["pair_trading"]["enabled"]:
-            self.strategies.append(PairTradingStrategy(sc["pair_trading"]))
+        # All strategies receive only the risk config — thresholds are self-computed
+        risk_cfg = cfg["risk"]
+        self.strategies = [
+            RSIBBStrategy(risk_cfg),
+            EMACrossStrategy(risk_cfg),
+            FundingRateStrategy(risk_cfg),
+            LiquidationCascadeStrategy(risk_cfg),
+            GridStrategy(risk_cfg),
+            PairTradingStrategy(risk_cfg),
+        ]
 
         self.predictor = SignalPredictor(cfg["ml"])
         self.trainer = ModelTrainer(cfg["ml"])
@@ -67,21 +64,32 @@ class Orchestrator:
         tg_cfg = {**cfg.get("telegram", {}), **secrets.get("telegram", {})}
         self.notifier = Notifier(tg_cfg)
 
-        self.symbols = cfg["binance"]["symbols"]
+        # Dynamic symbol discovery — all eligible USDT pairs on Binance
+        self._selector = SymbolSelector(
+            self.exchange,
+            max_symbols=cfg["binance"].get("max_symbols", 20),
+            min_volume_usdt=cfg["binance"].get("min_volume_usdt", 15_000_000),
+        )
+        self.symbols = self._selector.get_symbols(refresh=True)
+        self._symbol_refresh_secs = cfg["bot"].get("symbol_refresh_hours", 4) * 3600
+        self._last_symbol_refresh = datetime.utcnow()
+
         self.timeframe = cfg["binance"]["timeframe"]
         self._last_day: date = None
         self._trades_since_retrain = 0
 
+        # Start live liquidation feed (daemon thread)
         self._liq_feed = LiquidationFeed()
         self._liq_feed.start()
 
     # ------------------------------------------------------------------ #
 
     def run(self):
-        logger.info("Claudebot starting…")
+        mode = "PAPER" if self.cfg["bot"].get("paper_mode") else "LIVE"
+        logger.info(f"Claudebot starting — mode={mode} symbols={len(self.symbols)}")
         balance = self._balance()
         self.guards.set_starting_balance(balance)
-        logger.info(f"Balance: ${balance:,.2f} | paper={self.cfg['bot'].get('paper_mode')}")
+        logger.info(f"Balance: ${balance:,.2f}")
 
         interval = self.cfg["bot"].get("loop_interval_seconds", 60)
         while True:
@@ -89,6 +97,7 @@ class Orchestrator:
                 self._tick()
             except KeyboardInterrupt:
                 logger.info("Stopped by user")
+                self._liq_feed.stop()
                 break
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
@@ -109,6 +118,11 @@ class Orchestrator:
             self._send_daily_report()
             self._last_day = today
 
+        # Refresh symbol list periodically
+        if (datetime.utcnow() - self._last_symbol_refresh).total_seconds() >= self._symbol_refresh_secs:
+            self.symbols = self._selector.get_symbols(refresh=True)
+            self._last_symbol_refresh = datetime.utcnow()
+
         open_trades = self.orders.get_open_trades()
         self._check_exits(open_trades)
 
@@ -116,14 +130,14 @@ class Orchestrator:
             try:
                 self._process_symbol(symbol, balance, open_trades)
             except Exception as e:
-                logger.error(f"Error on {symbol}: {e}")
+                logger.error(f"Error processing {symbol}: {e}")
 
         self._process_pairs(balance, open_trades)
         self._maybe_retrain()
 
     def _process_symbol(self, symbol: str, balance: float, open_trades: list):
         df = self.fetcher.fetch_ohlcv(symbol, self.timeframe)
-        if df.empty or len(df) < 55:
+        if df.empty or len(df) < 60:
             return
         df = compute_features(df)
 
@@ -131,7 +145,7 @@ class Orchestrator:
         ob_imbalance = self.exchange.get_orderbook_imbalance(symbol)
 
         for strategy in self.strategies:
-            if strategy.name in ("pair_trading",) or not strategy.is_enabled():
+            if strategy.name == "pair_trading" or not strategy.is_enabled():
                 continue
             if self.guards.check_strategy_kill(strategy.name, balance):
                 continue
@@ -161,7 +175,9 @@ class Orchestrator:
                 continue
 
             atr = float(df.iloc[-1].get("atr", 0)) or float(df.iloc[-1]["close"]) * 0.01
-            size = self.risk.calculate_position_size(balance, float(df.iloc[-1]["close"]), atr, signal.stop_loss)
+            size = self.risk.calculate_position_size(
+                balance, float(df.iloc[-1]["close"]), atr, signal.stop_loss
+            )
             size = self.risk.adjust_for_ml_confidence(size, ml_conf)
             if size <= 0:
                 continue
@@ -177,6 +193,7 @@ class Orchestrator:
                     strategy.name, ml_conf, signal.stop_loss, signal.take_profit,
                 )
                 self._trades_since_retrain += 1
+                open_trades = self.orders.get_open_trades()  # refresh after new trade
 
     def _process_pairs(self, balance: float, open_trades: list):
         pair_strat = next((s for s in self.strategies if s.name == "pair_trading"), None)
@@ -193,6 +210,8 @@ class Orchestrator:
         signal = pair_strat.generate_signal(syms[0], df_a, df_secondary=df_b)
         if signal is None or signal.signal_type != "buy":
             return
+        if self.guards.check_symbol_cap(syms[0], open_trades):
+            return
         if not self.risk.can_open_position(open_trades, "pair_trading", balance):
             return
 
@@ -201,7 +220,9 @@ class Orchestrator:
             return
 
         atr = float(df_a.iloc[-1].get("atr", 0)) or float(df_a.iloc[-1]["close"]) * 0.01
-        size = self.risk.calculate_position_size(balance, float(df_a.iloc[-1]["close"]), atr, signal.stop_loss)
+        size = self.risk.calculate_position_size(
+            balance, float(df_a.iloc[-1]["close"]), atr, signal.stop_loss
+        )
         if size <= 0:
             return
 

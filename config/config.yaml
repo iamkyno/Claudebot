@@ -1,14 +1,12 @@
+# Claudebot configuration
+# Only fields here are infrastructure settings.
+# All strategy thresholds are computed automatically from market data.
+
 binance:
   testnet: false
-  symbols:
-    - BTC/USDT
-    - ETH/USDT
-    - SOL/USDT
-    - BNB/USDT
+  max_symbols: 20            # number of top USDT pairs to trade
+  min_volume_usdt: 15000000  # minimum 24h volume in USDT to be eligible
   timeframe: "1h"
-  futures_symbols:
-    - BTC/USDT:USDT
-    - ETH/USDT:USDT
 
 database:
   host: localhost
@@ -16,59 +14,16 @@ database:
   name: claudebot
 
 risk:
-  max_portfolio_risk_pct: 0.02
-  max_daily_loss_pct: 0.05
+  max_portfolio_risk_pct: 0.02    # max 2% of balance at risk per trade
+  max_daily_loss_pct: 0.05        # 5% daily drawdown kills trading for the day
   max_strategy_daily_loss_pct: 0.03
-  max_concurrent_positions: 8
+  max_concurrent_positions: 10
   max_positions_per_symbol: 2
-  max_leverage: 5
-  cash_reserve_pct: 0.20
-  conventional_allocation: 0.40
-  unconventional_allocation: 0.40
+  cash_reserve_pct: 0.20          # 20% always held as cash buffer
   atr_stop_multiplier: 1.5
-
-strategies:
-  rsi_bb:
-    enabled: true
-    rsi_period: 14
-    rsi_oversold: 30
-    rsi_overbought: 70
-    bb_period: 20
-    bb_std: 2.0
-    atr_stop_multiplier: 1.5
-
-  ema_cross:
-    enabled: true
-    fast_period: 9
-    slow_period: 21
-
-  funding_rate:
-    enabled: true
-    min_funding_rate: 0.001
-
-  liquidation_cascade:
-    enabled: true
-    min_liquidation_usd: 5000000
-    lookback_seconds: 60
-
-  grid:
-    enabled: true
-    grid_spacing_pct: 0.003
-    grid_levels: 10
-
-  pair_trading:
-    enabled: true
-    symbols:
-      - BTC/USDT
-      - ETH/USDT
-    lookback_periods: 30
-    zscore_entry: 2.0
-    zscore_exit: 0.5
 
 ml:
   min_trades_to_train: 50
-  retrain_interval_hours: 24
-  confidence_threshold: 0.60
   model_path: "ml/models/"
 
 telegram:
@@ -76,4 +31,5 @@ telegram:
 
 bot:
   loop_interval_seconds: 60
-  paper_mode: true
+  paper_mode: true               # set to false when ready to go live
+  symbol_refresh_hours: 4        # how often to re-rank tradeable symbols

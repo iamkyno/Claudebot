@@ -11,15 +11,17 @@ logger = logging.getLogger(__name__)
 
 class LiquidationCascadeStrategy(BaseStrategy):
     """
-    Trades mean-reversion after large forced liquidation cascades.
-    Liquidations create wicks that typically snap back violently.
+    Mean-reversion trade after a large liquidation cascade.
+    $5M minimum and 60-second lookback are fixed — these are market-structure
+    constants, not tuning parameters.
     """
+
+    _MIN_USD = 5_000_000
+    _LOOKBACK_SECS = 60
 
     def __init__(self, config: dict):
         super().__init__(config)
         self.name = "liquidation_cascade"
-        self.min_usd = config.get("min_liquidation_usd", 5_000_000)
-        self.lookback_secs = config.get("lookback_seconds", 60)
 
     def generate_signal(self, symbol: str, df: pd.DataFrame, **kwargs) -> Optional[Signal]:
         events = self._recent_liquidations(symbol)
@@ -27,7 +29,7 @@ class LiquidationCascadeStrategy(BaseStrategy):
             return None
 
         total_usd = sum(e["usd_value"] for e in events)
-        if total_usd < self.min_usd:
+        if total_usd < self._MIN_USD:
             return None
 
         long_liq = sum(e["usd_value"] for e in events if e["side"] == "long")
@@ -41,29 +43,24 @@ class LiquidationCascadeStrategy(BaseStrategy):
             "long_liquidations": long_liq,
             "short_liquidations": short_liq,
         }
-
         conf = min(0.60 + total_usd / 50_000_000, 0.92)
 
-        if long_liq > short_liq and long_liq >= self.min_usd:
-            # Long cascade → oversold wick → mean-revert upward
+        if long_liq > short_liq and long_liq >= self._MIN_USD:
             return Signal(
                 symbol=symbol, strategy=self.name, signal_type="buy",
                 confidence=conf,
                 stop_loss=round(price - atr * 1.5, 8),
                 take_profit=round(price + atr * 2.5, 8),
-                features=features,
-                metadata={"total_liq_usd": total_usd},
+                features=features, metadata={"total_liq_usd": total_usd},
             )
 
-        if short_liq > long_liq and short_liq >= self.min_usd:
-            # Short cascade → overbought wick → mean-revert downward
+        if short_liq > long_liq and short_liq >= self._MIN_USD:
             return Signal(
                 symbol=symbol, strategy=self.name, signal_type="sell",
                 confidence=conf,
                 stop_loss=round(price + atr * 1.5, 8),
                 take_profit=round(price - atr * 2.5, 8),
-                features=features,
-                metadata={"total_liq_usd": total_usd},
+                features=features, metadata={"total_liq_usd": total_usd},
             )
 
         return None
@@ -79,7 +76,7 @@ class LiquidationCascadeStrategy(BaseStrategy):
     def _recent_liquidations(self, symbol: str) -> list:
         session = get_session()
         try:
-            cutoff = datetime.utcnow() - timedelta(seconds=self.lookback_secs)
+            cutoff = datetime.utcnow() - timedelta(seconds=self._LOOKBACK_SECS)
             result = session.execute(text("""
                 SELECT side, usd_value FROM liquidation_events
                 WHERE symbol=:symbol AND event_time >= :cutoff AND traded_on=0
