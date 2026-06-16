@@ -1,0 +1,79 @@
+binance:
+  testnet: false
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+  timeframe: "1h"
+  futures_symbols:
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT
+
+database:
+  host: localhost
+  port: 3306
+  name: claudebot
+  charset: utf8mb4
+
+risk:
+  max_portfolio_risk_pct: 0.02
+  max_daily_loss_pct: 0.07
+  max_strategy_daily_loss_pct: 0.03
+  max_concurrent_positions: 8
+  max_leverage: 5
+  cash_reserve_pct: 0.20
+  conventional_allocation: 0.40
+  unconventional_allocation: 0.40
+  atr_stop_multiplier: 1.5
+
+strategies:
+  rsi_bb:
+    enabled: true
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    bb_period: 20
+    bb_std: 2.0
+    atr_stop_multiplier: 1.5
+
+  ema_cross:
+    enabled: true
+    fast_period: 9
+    slow_period: 21
+
+  funding_rate:
+    enabled: true
+    min_funding_rate: 0.001
+
+  liquidation_cascade:
+    enabled: true
+    min_liquidation_usd: 5000000
+    lookback_seconds: 60
+
+  grid:
+    enabled: true
+    grid_spacing_pct: 0.003
+    grid_levels: 10
+
+  pair_trading:
+    enabled: true
+    symbols:
+      - BTC/USDT
+      - ETH/USDT
+    lookback_periods: 30
+    zscore_entry: 2.0
+    zscore_exit: 0.5
+
+ml:
+  min_trades_to_train: 50
+  retrain_interval_hours: 24
+  confidence_threshold: 0.60
+  model_path: "ml/models/"
+
+telegram:
+  enabled: false
+
+bot:
+  loop_interval_seconds: 60
+  paper_mode: true
