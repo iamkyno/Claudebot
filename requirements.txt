@@ -1,6 +1,6 @@
 ccxt==4.3.89
 sqlalchemy==2.0.25
-pymysql==1.1.0
+psycopg2-binary==2.9.9
 pandas==2.1.4
 numpy==1.26.3
 ta==0.11.0

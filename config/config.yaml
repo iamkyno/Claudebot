@@ -12,15 +12,15 @@ binance:
 
 database:
   host: localhost
-  port: 3306
+  port: 5432
   name: claudebot
-  charset: utf8mb4
 
 risk:
   max_portfolio_risk_pct: 0.02
-  max_daily_loss_pct: 0.07
+  max_daily_loss_pct: 0.05
   max_strategy_daily_loss_pct: 0.03
   max_concurrent_positions: 8
+  max_positions_per_symbol: 2
   max_leverage: 5
   cash_reserve_pct: 0.20
   conventional_allocation: 0.40

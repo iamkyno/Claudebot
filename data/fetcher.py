@@ -32,7 +32,8 @@ class DataFetcher:
                         (symbol, timeframe, open_time, open_price, high_price, low_price, close_price, volume)
                     VALUES
                         (:symbol, :timeframe, :open_time, :open, :high, :low, :close, :volume)
-                    ON DUPLICATE KEY UPDATE close_price=:close, volume=:volume
+                    ON CONFLICT (symbol, timeframe, open_time)
+                    DO UPDATE SET close_price=EXCLUDED.close_price, volume=EXCLUDED.volume
                 """), {
                     "symbol": symbol, "timeframe": timeframe, "open_time": ts,
                     "open": row["open"], "high": row["high"],

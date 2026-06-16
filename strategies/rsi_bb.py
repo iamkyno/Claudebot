@@ -43,16 +43,18 @@ class RSIBBStrategy(BaseStrategy):
             "price_change_24": float(last["price_change_24"]) if pd.notna(last.get("price_change_24")) else None,
         }
 
-        # Buy: RSI oversold + price at lower BB + volume confirmation
-        if float(rsi) < self.rsi_oversold and float(bb_pos) < 0.15 and vol_ratio > 1.1:
+        adx = float(last["adx"]) if pd.notna(last.get("adx")) else 0.0
+
+        # Buy: RSI oversold + price at lower BB + volume confirmation + ranging market (ADX < 25)
+        if float(rsi) < self.rsi_oversold and float(bb_pos) < 0.15 and vol_ratio > 1.1 and adx < 25:
             stop = round(price - atr * self.atr_stop_mult, 8)
             tp = round(price + atr * 3.0, 8)
             conf = min(0.50 + (self.rsi_oversold - float(rsi)) / 100, 0.95)
             return Signal(symbol=symbol, strategy=self.name, signal_type="buy",
                           confidence=conf, stop_loss=stop, take_profit=tp, features=features)
 
-        # Sell signal (exit / short alert)
-        if float(rsi) > self.rsi_overbought and float(bb_pos) > 0.85:
+        # Sell signal (exit / short alert) — also only in ranging markets
+        if float(rsi) > self.rsi_overbought and float(bb_pos) > 0.85 and adx < 25:
             conf = min(0.50 + (float(rsi) - self.rsi_overbought) / 100, 0.95)
             return Signal(symbol=symbol, strategy=self.name, signal_type="sell",
                           confidence=conf, stop_loss=0.0, take_profit=0.0, features=features)

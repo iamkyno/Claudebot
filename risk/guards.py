@@ -8,8 +8,9 @@ logger = logging.getLogger(__name__)
 
 class RiskGuards:
     def __init__(self, config: dict):
-        self.daily_loss_limit = config.get("max_daily_loss_pct", 0.07)
+        self.daily_loss_limit = config.get("max_daily_loss_pct", 0.05)
         self.strategy_loss_limit = config.get("max_strategy_daily_loss_pct", 0.03)
+        self.max_positions_per_symbol = config.get("max_positions_per_symbol", 2)
         self._killed = False
         self._kill_reason = None
         self._starting_balance = None
@@ -30,6 +31,14 @@ class RiskGuards:
             return True
         return False
 
+    def check_symbol_cap(self, symbol: str, open_trades: list) -> bool:
+        """Returns True (block trade) when a symbol already has max open positions."""
+        count = sum(1 for t in open_trades if t.symbol == symbol)
+        if count >= self.max_positions_per_symbol:
+            logger.debug(f"Symbol cap hit for {symbol}: {count}/{self.max_positions_per_symbol}")
+            return True
+        return False
+
     def check_strategy_kill(self, strategy: str, balance: float) -> bool:
         if self._killed:
             return True
@@ -38,7 +47,7 @@ class RiskGuards:
             result = session.execute(text("""
                 SELECT COALESCE(SUM(pnl), 0)
                 FROM trades
-                WHERE strategy=:strategy AND DATE(exit_time)=CURDATE() AND status='closed'
+                WHERE strategy=:strategy AND DATE(exit_time)=CURRENT_DATE AND status='closed'
             """), {"strategy": strategy})
             daily_pnl = float(result.scalar() or 0)
             if balance > 0 and (daily_pnl / balance) <= -self.strategy_loss_limit:
@@ -70,8 +79,8 @@ class RiskGuards:
         try:
             session.execute(text("""
                 INSERT INTO bot_state (is_killed, kill_reason, snapshot_time)
-                VALUES (1, :reason, :now)
-            """), {"reason": reason, "now": datetime.utcnow()})
+                VALUES (1, :reason, NOW())
+            """), {"reason": reason})
             session.commit()
         except Exception as e:
             session.rollback()

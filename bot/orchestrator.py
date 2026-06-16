@@ -22,6 +22,7 @@ from strategies.funding_rate import FundingRateStrategy
 from strategies.liquidation_cascade import LiquidationCascadeStrategy
 from strategies.grid import GridStrategy
 from strategies.pair_trading import PairTradingStrategy
+from exchange.liquidation_feed import LiquidationFeed
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,9 @@ class Orchestrator:
         self.timeframe = cfg["binance"]["timeframe"]
         self._last_day: date = None
         self._trades_since_retrain = 0
+
+        self._liq_feed = LiquidationFeed()
+        self._liq_feed.start()
 
     # ------------------------------------------------------------------ #
 
@@ -130,6 +134,8 @@ class Orchestrator:
             if strategy.name in ("pair_trading",) or not strategy.is_enabled():
                 continue
             if self.guards.check_strategy_kill(strategy.name, balance):
+                continue
+            if self.guards.check_symbol_cap(symbol, open_trades):
                 continue
             if not self.risk.can_open_position(open_trades, strategy.name, balance):
                 continue
@@ -267,7 +273,7 @@ class Orchestrator:
                        COUNT(*),
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END)
                 FROM trades
-                WHERE DATE(exit_time) = CURDATE() - INTERVAL 1 DAY AND status='closed'
+                WHERE DATE(exit_time) = CURRENT_DATE - INTERVAL '1 day' AND status='closed'
             """)).fetchone()
             if row:
                 pnl, total, wins = float(row[0]), int(row[1]), int(row[2] or 0)

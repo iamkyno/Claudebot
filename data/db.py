@@ -25,8 +25,8 @@ def get_engine():
         db = config["database"]
         creds = secrets["database"]
         url = (
-            f"mysql+pymysql://{creds['user']}:{creds['password']}"
-            f"@{db['host']}:{db['port']}/{db['name']}?charset={db['charset']}"
+            f"postgresql+psycopg2://{creds['user']}:{creds['password']}"
+            f"@{db['host']}:{db['port']}/{db['name']}"
         )
         _engine = create_engine(url, poolclass=QueuePool, pool_size=5, max_overflow=10)
     return _engine
