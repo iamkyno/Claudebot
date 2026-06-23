@@ -14,3 +14,4 @@ requests==2.31.0
 vaderSentiment==3.3.2
 websocket-client==1.7.0
 python-dotenv==1.0.0
+tradingview-ta==3.3.0

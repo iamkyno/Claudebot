@@ -1,8 +1,30 @@
 # Claudebot — Autonomous Crypto Trading Bot
 
 A self-improving, multi-strategy crypto trading bot that runs on Binance, stores
-everything in TimescaleDB, and auto-discovers which coins to trade. No manual
-thresholds — just add API keys and run.
+everything in PostgreSQL, and auto-discovers which coins to trade. No manual
+thresholds, no config to fill in — it boots straight into paper trading and only
+needs API keys when you decide to go live.
+
+---
+
+## Quick Start (zero config)
+
+```bash
+git clone https://github.com/iamkyno/Claudebot.git
+cd Claudebot
+./run.sh
+```
+
+That's it. With no API keys, the bot:
+- runs in **paper mode** on a virtual $10,000 wallet
+- pulls live market data from Binance's **public** endpoints (no key required)
+- auto-creates its database and tables on first run
+- starts trading all top USDT pairs immediately
+
+Add Binance keys later (see below) only when you want to trade real money.
+
+> `run.sh` needs a running PostgreSQL (defaults: `localhost:5432`, user/password
+> `postgres`). On Windows or if you prefer manual steps, follow the sections below.
 
 ---
 
@@ -17,11 +39,37 @@ thresholds — just add API keys and run.
   - Liquidation cascade mean-reversion (real-time WebSocket feed)
   - Grid trading (ATR-derived spacing, kills itself in trending markets)
   - Statistical pair trading BTC/ETH (half-life auto-computed from spread)
+- **TradingView consensus** (keyless): every buy is cross-checked against
+  TradingView's own aggregated technical verdict, and the score feeds the ML model
 - **ML self-improvement**: XGBoost model retrains daily on your own trade history,
   scores every signal 0–1, and gates trades below 60% confidence
 - **Risk management**: 2% per trade, 5% daily kill-switch, per-symbol position cap,
   ATR-based stop losses — all auto-calculated from your balance and market data
 - **Telegram alerts**: trade opens/closes, daily PnL report, ML retrain notification
+
+### A note on the TradingView "MCP"
+
+TradingView-style MCP servers exist, but an MCP server is designed to be driven
+interactively by an AI assistant (Claude, Cursor, etc.). This bot runs an
+autonomous 24/7 loop, so instead of an MCP it uses the keyless
+[`tradingview-ta`](https://pypi.org/project/tradingview-ta/) Python library
+directly — same underlying TradingView analysis, no separate server or
+subscription. It's wired in at `data/tradingview.py` and toggled with
+`bot.use_tradingview` in the config.
+
+---
+
+## Configuration — all optional
+
+The bot reads credentials in this order: **environment variables → `.env` file →
+`config/secrets.yaml` → built-in defaults**. Set only what you want to change.
+
+| Method | When to use |
+|---|---|
+| Nothing | Paper trading on a local PostgreSQL — works out of the box |
+| `.env` file | Easiest for keys: `cp .env.example .env` and edit |
+| `config/secrets.yaml` | Traditional YAML: `cp config/secrets.yaml.example config/secrets.yaml` |
+| Env vars | Servers / Docker / CI |
 
 ---
 
@@ -31,62 +79,41 @@ thresholds — just add API keys and run.
 |---|---|---|
 | Python | 3.11+ | |
 | PostgreSQL | 14+ | via Laragon (Windows) or homebrew/apt |
-| TimescaleDB | 2.x | extension for PostgreSQL |
-| Binance account | — | needs Spot API key with trading enabled |
+| Binance account | — | only for **live** trading; not needed for paper |
+
+> TimescaleDB is **optional**. The bot runs on plain PostgreSQL. If you have
+> TimescaleDB installed, uncomment the `create_hypertable` / `CREATE EXTENSION`
+> lines in `schema/schema.sql` for faster time-series queries.
 
 ---
 
-## 1. Database Setup (TimescaleDB)
+## Manual Setup (Windows, or if you skip `run.sh`)
 
-### Windows — Laragon
+### 1. Database — just have PostgreSQL running
 
-Laragon ships with MySQL by default. You need to add PostgreSQL:
+You do **not** need to create the database or run any SQL by hand. On first
+launch the bot connects to PostgreSQL, creates the `claudebot` database if it's
+missing, and applies the schema automatically.
 
-1. Download PostgreSQL 16 from https://www.postgresql.org/download/windows/
-2. Install it alongside Laragon (different port — use **5432**)
-3. Install TimescaleDB:
-   - Download the TimescaleDB installer from https://docs.timescale.com/self-hosted/latest/install/installation-windows/
-   - Run the installer, point it at your PostgreSQL 16 installation
-4. Open pgAdmin or psql and create the database:
+All you need is a running PostgreSQL server and credentials the bot can use
+(defaults: host `localhost`, port `5432`, user/password `postgres`).
 
-```sql
-CREATE DATABASE claudebot;
-\c claudebot
-CREATE EXTENSION IF NOT EXISTS timescaledb;
-```
+- **Windows (Laragon):** Laragon ships MySQL by default — install PostgreSQL 16
+  from https://www.postgresql.org/download/windows/ on port **5432**, then set
+  the `postgres` user password and put it in your `.env` (`DB_PASSWORD=...`).
+- **Linux/macOS:** `sudo apt install postgresql` (or `brew install postgresql`),
+  make sure it's running, and set `DB_USER` / `DB_PASSWORD` if they differ from
+  the `postgres`/`postgres` default.
 
-5. Run the schema:
+> **Prefer MySQL?** A `schema/schema_mysql.sql` is included. You'd change the
+> port to `3306` in `config/config.yaml` and swap `postgresql+psycopg2` for
+> `mysql+pymysql` in `data/db.py` — but PostgreSQL is the supported path and
+> requires zero manual SQL.
 
-```bash
-psql -U postgres -d claudebot -f schema/schema.sql
-```
-
-### Linux / macOS
+### 2. Python Environment
 
 ```bash
-# Ubuntu/Debian
-sudo apt install postgresql-16
-# Add TimescaleDB repo and install
-sudo add-apt-repository ppa:timescale/timescaledb-ppa
-sudo apt install timescaledb-2-postgresql-16
-sudo timescaledb-tune
-
-sudo -u postgres psql -c "CREATE DATABASE claudebot;"
-sudo -u postgres psql -d claudebot -c "CREATE EXTENSION timescaledb;"
-sudo -u postgres psql -d claudebot -f schema/schema.sql
-```
-
-> **Staying on MySQL?** Use `schema/schema_mysql.sql` instead, change the port
-> back to `3306` in `config/config.yaml`, and in `data/db.py` replace
-> `postgresql+psycopg2` with `mysql+pymysql`. Install `pymysql` instead of
-> `psycopg2-binary` in requirements.txt.
-
----
-
-## 2. Python Environment
-
-```bash
-git clone <your-repo-url>
+git clone https://github.com/iamkyno/Claudebot.git
 cd Claudebot
 
 python -m venv venv
@@ -95,12 +122,13 @@ venv\Scripts\activate
 # Linux/macOS:
 source venv/bin/activate
 
+pip install "setuptools<67"     # one-time: lets the `ta` package build cleanly
 pip install -r requirements.txt
 ```
 
 ---
 
-## 3. API Keys
+## 3. API Keys (only for live trading)
 
 ### Binance
 
@@ -120,29 +148,29 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Configure Secrets
+## 4. Provide Keys (only for live trading)
+
+Pick whichever is easiest — all are optional for paper mode:
+
+**Option A — `.env` file (recommended):**
+
+```bash
+cp .env.example .env
+# edit .env: BINANCE_API_KEY, BINANCE_API_SECRET, DB_PASSWORD, etc.
+```
+
+**Option B — `config/secrets.yaml`:**
 
 ```bash
 cp config/secrets.yaml.example config/secrets.yaml
+# edit the YAML
 ```
 
-Edit `config/secrets.yaml`:
+**Option C — environment variables** (Docker/servers):
 
-```yaml
-binance:
-  api_key: "your_binance_api_key_here"
-  api_secret: "your_binance_api_secret_here"
-
-database:
-  user: "postgres"
-  password: "your_postgres_password_here"
-
-telegram:
-  token: "your_telegram_bot_token_here"   # leave blank if not using
-  chat_id: "your_chat_id_here"
+```bash
+export BINANCE_API_KEY=... BINANCE_API_SECRET=... DB_PASSWORD=...
 ```
-
-That's the only file you need to edit. Everything else is automatic.
 
 ---
 
@@ -156,12 +184,15 @@ That's the only file you need to edit. Everything else is automatic.
 | `binance.min_volume_usdt` | 15000000 | Min 24h volume filter ($15M) |
 | `binance.testnet` | false | Set true to use Binance Testnet |
 | `bot.paper_mode` | true | Paper trading (no real orders) |
+| `bot.paper_balance_usdt` | 10000 | Virtual wallet size for paper mode |
 | `bot.symbol_refresh_hours` | 4 | How often to re-rank symbols |
+| `bot.use_tradingview` | true | Keyless TradingView consensus filter |
+| `bot.tradingview_veto_score` | -0.5 | Skip buys when TV consensus ≤ this |
 | `risk.max_portfolio_risk_pct` | 0.02 | Max 2% of balance per trade |
 | `risk.max_concurrent_positions` | 10 | Max open trades at once |
 
-**Do not touch the `strategies:` section** — it no longer exists. Thresholds
-are computed from live market data automatically.
+**There is no `strategies:` section** — thresholds are computed from live market
+data automatically.
 
 ---
 
@@ -174,19 +205,20 @@ python -m bot.main
 ```
 
 The bot will:
-1. Connect to Binance and fetch your balance
-2. Discover top USDT pairs by volume
+1. Create/verify its database and tables
+2. Discover top USDT pairs by volume (public Binance data — no key needed)
 3. Start the liquidation cascade WebSocket feed
-4. Begin scanning for signals every 60 seconds
-5. Log all trades to TimescaleDB (viewable in pgAdmin/Laragon)
+4. Begin scanning for signals every 60 seconds, trading the virtual wallet
+5. Log all trades to PostgreSQL (viewable in pgAdmin/Laragon)
 6. Send Telegram notifications if configured
 
 Watch the log:
 
 ```
+2026-06-16 15:00:00 | INFO | bot.main | Initialising database…
 2026-06-16 15:00:01 | INFO | bot.orchestrator | Claudebot starting — mode=PAPER symbols=20
-2026-06-16 15:00:01 | INFO | bot.orchestrator | Balance: $0.00
-2026-06-16 15:00:02 | INFO | data.symbol_selector | Refreshed: 20 symbols | Top 5: BTC/USDT, ETH/USDT, ...
+2026-06-16 15:00:01 | INFO | bot.orchestrator | Balance: $10,000.00
+2026-06-16 15:00:02 | INFO | data.symbol_selector | Symbol selector refreshed: 20 symbols | Top 5: BTC/USDT, ETH/USDT, ...
 2026-06-16 15:00:03 | INFO | exchange.liquidation_feed | Liquidation feed started
 ```
 
@@ -275,10 +307,11 @@ claudebot/
 │   ├── fetcher.py        — OHLCV from Binance + cache
 │   ├── features.py       — 20+ technical indicators
 │   ├── symbol_selector.py — auto-rank tradeable pairs
-│   └── db.py             — TimescaleDB connection pool
+│   ├── tradingview.py    — keyless TradingView consensus
+│   └── db.py             — PostgreSQL pool + auto-init/migrate
 ├── exchange/
 │   ├── client.py         — ccxt Binance wrapper (spot + futures)
-│   ├── orders.py         — order placement + trade logging
+│   ├── orders.py         — order placement + paper wallet + trade logging
 │   └── liquidation_feed.py — real-time liquidation WebSocket
 ├── risk/
 │   ├── manager.py        — ATR position sizing, Kelly scaling
@@ -289,11 +322,12 @@ claudebot/
 ├── backtest/
 │   └── engine.py         — historical simulation
 ├── schema/
-│   ├── schema.sql        — TimescaleDB schema (primary)
+│   ├── schema.sql        — PostgreSQL schema (auto-applied)
 │   └── schema_mysql.sql  — MySQL fallback schema
 └── config/
+    ├── settings.py       — env/.env/yaml credential resolver
     ├── config.yaml       — bot settings (no thresholds)
-    └── secrets.yaml      — API keys (gitignored)
+    └── secrets.yaml      — API keys (gitignored, optional)
 ```
 
 ---
@@ -312,10 +346,11 @@ pip install psycopg2-binary  # use the binary wheel, not source
 pip install ta
 ```
 
-**Bot shows `Balance: $0.00` in paper mode**
+**Paper mode — where does the balance come from?**
 
-This is normal — paper mode doesn't query a real balance. It simulates trades
-against whatever the current market price is.
+Paper mode uses a virtual wallet (`bot.paper_balance_usdt`, default $10,000). It
+fills orders at live market prices but never touches a real exchange balance, so
+no API key is required. PnL accrues in the `trades` table as positions close.
 
 **`ccxt.errors.AuthenticationError`**
 

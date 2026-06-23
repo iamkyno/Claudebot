@@ -10,11 +10,14 @@ from data.db import get_session
 
 logger = logging.getLogger(__name__)
 
+# Keys here must read from the in-memory feature dict produced by the strategies
+# and data/features.py. They map POSITIONALLY to the DB columns in
+# ml/trainer.SIGNAL_COLS, so order + length must stay in sync with that list.
 FEATURE_ORDER = [
     "rsi", "macd", "macd_signal", "bb_upper", "bb_lower", "bb_position",
     "ema_9", "ema_21", "ema_50", "atr", "volume_ratio",
-    "price_change_1h", "price_change_4h", "price_change_24h",
-    "funding_rate", "orderbook_imbalance",
+    "price_change_1", "price_change_4", "price_change_24",
+    "funding_rate", "orderbook_imbalance", "tv_recommendation",
 ]
 
 
@@ -57,8 +60,16 @@ class SignalPredictor:
             logger.debug(f"Scoring failed: {e}")
             return 0.5
 
+    @property
+    def has_model(self) -> bool:
+        return self._model is not None
+
     def should_trade(self, features: dict) -> Tuple[bool, float]:
         conf = self.score_signal(features)
+        # Bootstrap: with no trained model yet, don't block — the bot needs to
+        # place (and label) trades before it has anything to learn from.
+        if self._model is None:
+            return True, conf
         return conf >= self.threshold, conf
 
     def log_signal(
@@ -75,12 +86,13 @@ class SignalPredictor:
                      rsi, macd, macd_signal, bb_upper, bb_lower, bb_position,
                      ema_9, ema_21, ema_50, atr, volume_ratio,
                      price_change_1h, price_change_4h, price_change_24h,
-                     funding_rate, orderbook_imbalance)
+                     funding_rate, orderbook_imbalance, tv_recommendation)
                 VALUES
                     (:symbol, :strategy, :signal_type, :confidence,
                      :rsi, :macd, :macd_signal, :bb_upper, :bb_lower, :bb_position,
                      :ema_9, :ema_21, :ema_50, :atr, :volume_ratio,
-                     :pc1h, :pc4h, :pc24h, :funding_rate, :ob_imbalance)
+                     :pc1h, :pc4h, :pc24h, :funding_rate, :ob_imbalance, :tv)
+                RETURNING id
             """), {
                 "symbol": symbol, "strategy": strategy,
                 "signal_type": signal_type, "confidence": confidence,
@@ -93,9 +105,11 @@ class SignalPredictor:
                 "pc24h": f.get("price_change_24"),
                 "funding_rate": f.get("funding_rate"),
                 "ob_imbalance": f.get("orderbook_imbalance"),
+                "tv": f.get("tv_recommendation"),
             })
+            signal_id = result.scalar()
             session.commit()
-            return result.lastrowid
+            return signal_id
         except Exception as e:
             session.rollback()
             logger.error(f"Failed to log signal: {e}")

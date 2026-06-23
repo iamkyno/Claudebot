@@ -1,21 +1,11 @@
 import time
 import logging
-import yaml
-from pathlib import Path
 from functools import wraps
 import ccxt
 
+from config.settings import get_config, get_secrets
+
 logger = logging.getLogger(__name__)
-
-
-def _load_secrets():
-    with open(Path(__file__).parent.parent / "config" / "secrets.yaml") as f:
-        return yaml.safe_load(f)
-
-
-def _load_config():
-    with open(Path(__file__).parent.parent / "config" / "config.yaml") as f:
-        return yaml.safe_load(f)
 
 
 def retry(max_attempts=3, base_delay=2.0):
@@ -37,19 +27,26 @@ def retry(max_attempts=3, base_delay=2.0):
 
 class BinanceClient:
     def __init__(self):
-        secrets = _load_secrets()
-        self.config = _load_config()
+        secrets = get_secrets()
+        self.config = get_config()
 
-        params = {
-            "apiKey": secrets["binance"]["api_key"],
-            "secret": secrets["binance"]["api_secret"],
-            "enableRateLimit": True,
-        }
+        api_key = secrets["binance"]["api_key"]
+        api_secret = secrets["binance"]["api_secret"]
+        self.has_keys = bool(api_key and api_secret)
+
+        params = {"enableRateLimit": True}
+        if self.has_keys:
+            params["apiKey"] = api_key
+            params["secret"] = api_secret
+        else:
+            # Public-data-only mode — enough for paper trading and backtests.
+            logger.info("No Binance API keys found — running in public-data mode "
+                        "(paper trading only).")
 
         self.spot = ccxt.binance({**params, "options": {"defaultType": "spot"}})
         self.futures = ccxt.binance({**params, "options": {"defaultType": "future"}})
 
-        if self.config["binance"].get("testnet"):
+        if self.config.get("binance", {}).get("testnet"):
             self.spot.set_sandbox_mode(True)
             self.futures.set_sandbox_mode(True)
 
@@ -63,6 +60,8 @@ class BinanceClient:
 
     @retry()
     def fetch_balance(self):
+        if not self.has_keys:
+            return {}
         return self.spot.fetch_balance()
 
     @retry()

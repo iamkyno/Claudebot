@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS signals (
     price_change_24h     NUMERIC(10, 6),
     funding_rate         NUMERIC(10, 8),
     orderbook_imbalance  NUMERIC(10, 6),
+    tv_recommendation    NUMERIC(5, 4),   -- TradingView consensus score (-1..1)
     outcome              SMALLINT,    -- 1=profitable, -1=loss, 0=breakeven
     actual_pnl_pct       NUMERIC(10, 6),
     trade_id             BIGINT,

@@ -25,6 +25,8 @@ risk:
 ml:
   min_trades_to_train: 50
   model_path: "ml/models/"
+  confidence_threshold: 0.60     # ML must score a signal >= this to trade
+  retrain_every_trades: 100      # also retrains once per day automatically
 
 telegram:
   enabled: false
@@ -32,4 +34,7 @@ telegram:
 bot:
   loop_interval_seconds: 60
   paper_mode: true               # set to false when ready to go live
+  paper_balance_usdt: 10000      # virtual starting wallet for paper trading
   symbol_refresh_hours: 4        # how often to re-rank tradeable symbols
+  use_tradingview: true          # keyless TradingView consensus confirmation
+  tradingview_veto_score: -0.5   # skip buys when TV consensus <= this (-1..1)

@@ -13,11 +13,12 @@ from data.db import get_session
 
 logger = logging.getLogger(__name__)
 
+# DB column names, positionally aligned with ml/predictor.FEATURE_ORDER.
 SIGNAL_COLS = [
     "rsi", "macd", "macd_signal", "bb_upper", "bb_lower", "bb_position",
     "ema_9", "ema_21", "ema_50", "atr", "volume_ratio",
     "price_change_1h", "price_change_4h", "price_change_24h",
-    "funding_rate", "orderbook_imbalance",
+    "funding_rate", "orderbook_imbalance", "tv_recommendation",
 ]
 
 

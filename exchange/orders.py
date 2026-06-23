@@ -8,10 +8,25 @@ logger = logging.getLogger(__name__)
 
 
 class OrderManager:
-    def __init__(self, exchange_client, paper_mode: bool = False):
+    def __init__(self, exchange_client, paper_mode: bool = False,
+                 paper_balance: float = 10_000.0):
         self.client = exchange_client
         self.paper_mode = paper_mode
         self._paper_counter = 1
+        # Virtual wallet for paper trading so the bot actually trades with no keys.
+        self._paper_cash = float(paper_balance)
+        self._paper_start = float(paper_balance)
+        self._paper_positions: dict[int, float] = {}  # trade_id -> cost basis (USDT)
+
+    # -- paper wallet --------------------------------------------------- #
+
+    def free_cash(self) -> float:
+        """Un-deployed USDT available to open new positions (paper mode)."""
+        return self._paper_cash
+
+    def equity(self) -> float:
+        """Cash + cost basis of open positions = starting balance + realized PnL."""
+        return self._paper_cash + sum(self._paper_positions.values())
 
     def place_market_buy(
         self,
@@ -43,6 +58,11 @@ class OrderManager:
                 stop_loss, take_profit, ml_confidence, signal_id,
             )
 
+            if self.paper_mode and trade_id:
+                cost = quantity * price
+                self._paper_cash -= cost
+                self._paper_positions[trade_id] = cost
+
             prefix = "[PAPER] " if self.paper_mode else ""
             logger.info(f"{prefix}BUY {quantity:.6f} {symbol} @ {price:.4f} | {strategy}")
             return {"order": order, "trade_id": trade_id, "price": price, "quantity": quantity}
@@ -65,6 +85,10 @@ class OrderManager:
                 order = self._paper_order(symbol, "sell", quantity, price)
             else:
                 order = self.client.create_market_order(symbol, "sell", quantity)
+
+            if self.paper_mode:
+                self._paper_cash += quantity * price
+                self._paper_positions.pop(trade_id, None)
 
             if trade_id:
                 self._close_trade(trade_id, price)
@@ -100,6 +124,7 @@ class OrderManager:
                 VALUES
                     (:symbol, :strategy, :side, :entry_price, :quantity,
                      :stop_loss, :take_profit, :ml_confidence, :signal_id, :entry_time, 'open')
+                RETURNING id
             """), {
                 "symbol": symbol, "strategy": strategy, "side": side,
                 "entry_price": entry_price, "quantity": quantity,
@@ -107,8 +132,9 @@ class OrderManager:
                 "ml_confidence": ml_confidence, "signal_id": signal_id,
                 "entry_time": datetime.utcnow(),
             })
+            trade_id = result.scalar()
             session.commit()
-            return result.lastrowid
+            return trade_id
         except Exception as e:
             session.rollback()
             logger.error(f"Failed to log trade: {e}")
