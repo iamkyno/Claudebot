@@ -1,12 +1,16 @@
 import logging
 import sys
 
+# Windows cp1252 console can't print arrows/emoji — switch to UTF-8 first.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("claudebot.log"),
+        logging.FileHandler("claudebot.log", encoding="utf-8"),
     ],
 )
 
@@ -20,7 +24,7 @@ def main():
     init_db()
 
     if not has_binance_keys():
-        log.info("No Binance keys detected → paper trading on public market data. "
+        log.info("No Binance keys detected -> paper trading on public market data. "
                  "Add keys (env vars or config/secrets.yaml) to enable live trading.")
 
     cfg = get_config()
