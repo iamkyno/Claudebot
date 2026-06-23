@@ -36,6 +36,15 @@ dashboard:
   host: "0.0.0.0"
   port: 8080
 
+scalp:
+  enabled: true
+  venue: futures             # fee model used for sizing targets (futures taker ~0.05%)
+  entry_timeframe: "1m"      # signals are read here
+  trend_timeframe: "5m"      # higher-TF gate: never scalp against this trend
+  max_symbols: 8             # only scalp the most liquid pairs
+  taker_fee_rate: 0.0005     # 0.05% per side (futures). Spot is ~0.001
+  scalp_time_stop_min: 15    # cut a scalp that hasn't worked in N minutes
+
 bot:
   loop_interval_seconds: 60
   paper_mode: true               # set to false when ready to go live

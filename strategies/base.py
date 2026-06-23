@@ -20,6 +20,9 @@ class BaseStrategy(ABC):
     def __init__(self, config: dict):
         self.config = config
         self.name = self.__class__.__name__.lower()
+        # None = use the orchestrator's default timeframe. Scalp strategies
+        # override this (e.g. "1m") so exits are checked on the right candles.
+        self.timeframe = None
 
     @abstractmethod
     def generate_signal(self, symbol: str, df: pd.DataFrame, **kwargs) -> Optional[Signal]:

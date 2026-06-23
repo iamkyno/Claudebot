@@ -32,13 +32,17 @@ Add Binance keys later (see below) only when you want to trade real money.
 
 - **Auto-selects symbols**: ranks all USDT pairs on Binance by volume × volatility
   and trades the top 20 (refreshes every 4 hours)
-- **6 strategies running simultaneously**:
+- **7 strategies running simultaneously**:
   - RSI + Bollinger Band mean-reversion (adaptive thresholds from data percentiles)
   - EMA crossover trend-following (periods auto-selected by volatility regime)
   - Funding rate arbitrage (perpetual futures)
   - Liquidation cascade mean-reversion (real-time WebSocket feed)
   - Grid trading (ATR-derived spacing, kills itself in trending markets)
   - Statistical pair trading BTC/ETH (half-life auto-computed from spread)
+  - **Fee-aware scalper** — fast in/out on 1m candles, gated by the 5m trend.
+    Three micro-edges (VWAP reversion, order-flow imbalance, momentum burst);
+    every target is sized to clear ~2× the round-trip fee or the trade is
+    skipped, because fees are what kill scalping. Long-only for now.
 - **TradingView consensus** (keyless): every buy is cross-checked against
   TradingView's own aggregated technical verdict, and the score feeds the ML model
 - **ML self-improvement**: XGBoost model retrains daily on your own trade history,
@@ -302,7 +306,8 @@ claudebot/
 │   ├── funding_rate.py   — perpetual futures funding arb
 │   ├── liquidation_cascade.py — post-liquidation reversion
 │   ├── grid.py           — ATR-spaced grid trading
-│   └── pair_trading.py   — BTC/ETH statistical arbitrage
+│   ├── pair_trading.py   — BTC/ETH statistical arbitrage
+│   └── scalping.py       — fee-aware 1m scalper (5m trend gate)
 ├── data/
 │   ├── fetcher.py        — OHLCV from Binance + cache
 │   ├── features.py       — 20+ technical indicators

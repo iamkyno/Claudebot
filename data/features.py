@@ -46,6 +46,12 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx()
     df["roc"] = ta.momentum.ROCIndicator(df["close"], window=12).roc()
 
+    # VWAP — running volume-weighted average price over the loaded window.
+    # On low timeframes (1m/5m) this is the intraday mean scalpers fade toward.
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    cum_vol = df["volume"].cumsum().replace(0, np.nan)
+    df["vwap"] = (typical * df["volume"]).cumsum() / cum_vol
+
     return df
 
 

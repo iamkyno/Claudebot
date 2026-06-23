@@ -24,6 +24,7 @@ from strategies.funding_rate import FundingRateStrategy
 from strategies.liquidation_cascade import LiquidationCascadeStrategy
 from strategies.grid import GridStrategy
 from strategies.pair_trading import PairTradingStrategy
+from strategies.scalping import ScalpStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,28 @@ class Orchestrator:
             GridStrategy(risk_cfg),
             PairTradingStrategy(risk_cfg),
         ]
+
+        # Fee-aware scalper — fast in/out on a low timeframe, runs separately
+        # from the swing strategies above (its own timeframe + exit cadence).
+        scalp_cfg = cfg.get("scalp", {})
+        self.scalp_enabled = scalp_cfg.get("enabled", True)
+        self.scalp_entry_tf = scalp_cfg.get("entry_timeframe", "1m")
+        self.scalp_trend_tf = scalp_cfg.get("trend_timeframe", "5m")
+        self.scalp_max_symbols = scalp_cfg.get("max_symbols", 8)
+        self.scalper = (
+            ScalpStrategy(
+                {**risk_cfg, **scalp_cfg},
+                fee_rate=scalp_cfg.get("taker_fee_rate", 0.0005),
+                timeframe=self.scalp_entry_tf,
+            )
+            if self.scalp_enabled else None
+        )
+
+        # Exit lookup covers every strategy that can hold a position, including
+        # the scalper, so _check_exits can find the right one + its timeframe.
+        self._exit_lookup = {s.name: s for s in self.strategies}
+        if self.scalper:
+            self._exit_lookup[self.scalper.name] = self.scalper
 
         self.predictor = SignalPredictor(cfg["ml"])
         self.trainer = ModelTrainer(cfg["ml"])
@@ -146,6 +169,10 @@ class Orchestrator:
                 logger.error(f"Error processing {symbol}: {e}")
 
         self._process_pairs(equity, free, open_trades)
+
+        # Fast-timeframe scalping pass on the most liquid pairs.
+        if self.scalper:
+            self._process_scalps(equity)
 
         if self._trades_since_retrain >= self._retrain_every:
             self._retrain()
@@ -264,12 +291,82 @@ class Orchestrator:
             )
             self._trades_since_retrain += 1
 
+    def _process_scalps(self, equity: float):
+        """Fast in/out scalping on the most liquid pairs (1m entry, 5m gate)."""
+        scalp_symbols = self.symbols[: self.scalp_max_symbols]
+        open_trades = self.orders.get_open_trades()
+        free = self._free()
+
+        for symbol in scalp_symbols:
+            try:
+                if self.guards.check_strategy_kill("scalp", equity):
+                    break
+                if not self.risk.can_open_position(open_trades, "scalp", free):
+                    break
+                if self.guards.check_symbol_cap(symbol, open_trades):
+                    continue
+
+                df = self.fetcher.fetch_ohlcv(symbol, self.scalp_entry_tf, limit=300)
+                if df.empty or len(df) < 60:
+                    continue
+                df_trend = self.fetcher.fetch_ohlcv(symbol, self.scalp_trend_tf, limit=200)
+                ob = self.exchange.get_orderbook_imbalance(symbol)
+
+                signal = self.scalper.generate_signal(
+                    symbol, df, df_trend=df_trend, ob_imbalance=ob
+                )
+                if signal is None or signal.signal_type != "buy":
+                    continue
+
+                tv_score = self.tv.score(symbol) if self.tv else None
+                if tv_score is not None and tv_score <= self.tv_veto:
+                    continue
+
+                signal.features["funding_rate"] = None
+                signal.features["orderbook_imbalance"] = ob
+                signal.features["tv_recommendation"] = tv_score
+
+                ok, ml_conf = self.predictor.should_trade(signal.features)
+                signal_id = self.predictor.log_signal(
+                    symbol, "scalp", "buy", ml_conf, signal.features
+                )
+                if not ok:
+                    continue
+
+                price = float(df.iloc[-1]["close"])
+                atr = float(df.iloc[-1].get("atr", 0)) or price * 0.005
+                size = self.risk.calculate_position_size(
+                    free, price, atr, signal.stop_loss
+                )
+                if self.predictor.has_model:
+                    size = self.risk.adjust_for_ml_confidence(size, ml_conf)
+                if size <= 0:
+                    continue
+
+                result = self.orders.place_market_buy(
+                    symbol=symbol, usdt_amount=size, strategy="scalp",
+                    stop_loss=signal.stop_loss, take_profit=signal.take_profit,
+                    ml_confidence=ml_conf, signal_id=signal_id,
+                )
+                if result:
+                    self.notifier.trade_opened(
+                        symbol, "buy", result["price"], result["quantity"],
+                        "scalp", ml_conf, signal.stop_loss, signal.take_profit,
+                    )
+                    self._trades_since_retrain += 1
+                    open_trades = self.orders.get_open_trades()
+                    free = self._free()
+            except Exception as e:
+                logger.error(f"Scalp error {symbol}: {e}")
+
     def _check_exits(self, open_trades: list):
         for trade in open_trades:
-            strat = next((s for s in self.strategies if s.name == trade.strategy), None)
+            strat = self._exit_lookup.get(trade.strategy)
             if strat is None:
                 continue
-            df = self.fetcher.fetch_ohlcv(trade.symbol, self.timeframe)
+            # Scalp trades are exited on their own (fast) timeframe.
+            tf = getattr(strat, "timeframe", None) or self.timeframe
+            df = self.fetcher.fetch_ohlcv(trade.symbol, tf)
             if df.empty:
                 continue
             trade_dict = dict(trade._mapping)
