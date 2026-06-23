@@ -27,6 +27,8 @@ ml:
   model_path: "ml/models/"
   confidence_threshold: 0.60     # ML must score a signal >= this to trade
   retrain_every_trades: 100      # also retrains once per day automatically
+  label_min_edge: 0.0015         # a trade counts as a "win" only if it cleared
+                                 # this net % (beats fees) — fee-aware labels
 
 telegram:
   enabled: false
