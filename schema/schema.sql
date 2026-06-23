@@ -1,8 +1,9 @@
--- TimescaleDB schema for Claudebot
--- Requirements: PostgreSQL 14+ with TimescaleDB extension
--- Run: psql -U postgres -f schema.sql
+-- Schema for Claudebot
+-- Works with plain PostgreSQL 14+ or PostgreSQL + TimescaleDB
+-- TimescaleDB: uncomment the CREATE EXTENSION and create_hypertable lines below
+-- Run: psql -U postgres -d claudebot -f schema/schema.sql
 
-CREATE EXTENSION IF NOT EXISTS timescaledb;
+-- CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 CREATE TABLE IF NOT EXISTS trades (
     id               BIGSERIAL PRIMARY KEY,
@@ -82,7 +83,7 @@ CREATE TABLE IF NOT EXISTS ohlcv_cache (
     created_at  TIMESTAMP     DEFAULT NOW(),
     UNIQUE (symbol, timeframe, open_time)
 );
-SELECT create_hypertable('ohlcv_cache', 'open_time', if_not_exists => TRUE);
+-- SELECT create_hypertable('ohlcv_cache', 'open_time', if_not_exists => TRUE);  -- uncomment if TimescaleDB installed
 CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_tf ON ohlcv_cache (symbol, timeframe, open_time DESC);
 
 -- -----------------------------------------------------------------------
@@ -121,7 +122,7 @@ CREATE TABLE IF NOT EXISTS bot_state (
     kill_reason       VARCHAR(255),
     snapshot_time     TIMESTAMP    DEFAULT NOW()
 );
-SELECT create_hypertable('bot_state', 'snapshot_time', if_not_exists => TRUE);
+-- SELECT create_hypertable('bot_state', 'snapshot_time', if_not_exists => TRUE);  -- uncomment if TimescaleDB installed
 
 -- -----------------------------------------------------------------------
 
@@ -136,5 +137,5 @@ CREATE TABLE IF NOT EXISTS liquidation_events (
     traded_on   SMALLINT      DEFAULT 0,
     created_at  TIMESTAMP     DEFAULT NOW()
 );
-SELECT create_hypertable('liquidation_events', 'event_time', if_not_exists => TRUE);
+-- SELECT create_hypertable('liquidation_events', 'event_time', if_not_exists => TRUE);  -- uncomment if TimescaleDB installed
 CREATE INDEX IF NOT EXISTS idx_liq_symbol ON liquidation_events (symbol, event_time DESC);
