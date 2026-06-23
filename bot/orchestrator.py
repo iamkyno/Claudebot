@@ -43,6 +43,9 @@ class Orchestrator:
         self.orders = OrderManager(
             self.exchange, paper_mode=self.paper_mode, paper_balance=paper_balance
         )
+        # Resume cleanly: rebuild the paper wallet from any positions left open
+        # by a previous run so a restart doesn't reset cash or lose positions.
+        self.orders.reconcile_paper_wallet()
 
         self.risk = RiskManager(cfg["risk"])
         self.guards = RiskGuards(cfg["risk"])

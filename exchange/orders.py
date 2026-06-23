@@ -20,6 +20,41 @@ class OrderManager:
 
     # -- paper wallet --------------------------------------------------- #
 
+    def reconcile_paper_wallet(self):
+        """
+        Rebuild the in-memory paper wallet from open trades in the DB.
+
+        The paper wallet is in-memory, but trades persist in the database.
+        Without this, restarting the bot would reset cash to the full starting
+        balance while old positions are still open — inflating equity and
+        creating phantom cash when those trades later close. Called once on
+        startup so a restart resumes exactly where it left off.
+        """
+        if not self.paper_mode:
+            return
+        session = get_session()
+        try:
+            rows = session.execute(text(
+                "SELECT id, entry_price, quantity FROM trades WHERE status='open'"
+            )).fetchall()
+        finally:
+            session.close()
+
+        self._paper_positions = {}
+        deployed = 0.0
+        for r in rows:
+            cost = float(r[1]) * float(r[2])
+            self._paper_positions[int(r[0])] = cost
+            deployed += cost
+        self._paper_cash = max(self._paper_start - deployed, 0.0)
+        # Keep the order counter ahead of any existing paper order ids.
+        if rows:
+            self._paper_counter = max(self._paper_counter, max(int(r[0]) for r in rows) + 1)
+            logger.info(
+                f"[PAPER] Reconciled {len(rows)} open position(s): "
+                f"${deployed:,.2f} deployed, ${self._paper_cash:,.2f} cash free"
+            )
+
     def free_cash(self) -> float:
         """Un-deployed USDT available to open new positions (paper mode)."""
         return self._paper_cash
