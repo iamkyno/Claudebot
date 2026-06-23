@@ -72,8 +72,8 @@ class ScalpStrategy(BaseStrategy):
         vwap = float(last["vwap"]) if pd.notna(last.get("vwap")) else price
         rsi = float(last["rsi"]) if pd.notna(last.get("rsi")) else 50.0
         vol_ratio = float(last["volume_ratio"]) if pd.notna(last.get("volume_ratio")) else 1.0
-        upticking = price > float(prev["close"])
-        pc1 = float(last["price_change_1"]) if pd.notna(last.get("price_change_1")) else 0.0
+        upticking = pd.notna(prev.get("close")) and price > float(prev["close"])
+        pc1 = float(last["price_change_1h"]) if pd.notna(last.get("price_change_1h")) else 0.0
 
         # Target edge: clears fees, scaled up by volatility so we don't set a
         # target inside the candle's own noise.
@@ -114,9 +114,9 @@ class ScalpStrategy(BaseStrategy):
             "ema_50": float(last["ema_50"]) if pd.notna(last.get("ema_50")) else None,
             "atr": atr,
             "volume_ratio": vol_ratio,
-            "price_change_1": pc1,
-            "price_change_4": float(last["price_change_4"]) if pd.notna(last.get("price_change_4")) else None,
-            "price_change_24": float(last["price_change_24"]) if pd.notna(last.get("price_change_24")) else None,
+            "price_change_1h": pc1,
+            "price_change_4h": float(last["price_change_4h"]) if pd.notna(last.get("price_change_4h")) else None,
+            "price_change_24h": float(last["price_change_24h"]) if pd.notna(last.get("price_change_24h")) else None,
         }
 
         logger.info(

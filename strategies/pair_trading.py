@@ -56,8 +56,8 @@ class PairTradingStrategy(BaseStrategy):
             return Signal(
                 symbol=self.symbols[0], strategy=self.name, signal_type="sell",
                 confidence=min(0.50 + (z - entry_z) / 4.0, 0.92),
-                stop_loss=round(price_a * (1 + atr / price_a * self.atr_stop_mult), 8),
-                take_profit=round(price_a * (1 - atr / price_a * self.atr_stop_mult), 8),
+                stop_loss=round(price_a + atr * self.atr_stop_mult, 8),
+                take_profit=round(price_a - atr * self.atr_stop_mult * 2.0, 8),
                 features=features, metadata={"pair": self.symbols, "zscore": z},
             )
 

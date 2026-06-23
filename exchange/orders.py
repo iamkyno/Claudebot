@@ -35,7 +35,7 @@ class OrderManager:
         session = get_session()
         try:
             rows = session.execute(text(
-                "SELECT id, entry_price, quantity FROM trades WHERE status='open'"
+                "SELECT id, symbol, entry_price, quantity FROM trades WHERE status='open'"
             )).fetchall()
         finally:
             session.close()
@@ -43,8 +43,10 @@ class OrderManager:
         self._paper_positions = {}
         deployed = 0.0
         for r in rows:
-            cost = float(r[1]) * float(r[2])
-            self._paper_positions[int(r[0])] = cost
+            cost = float(r[2]) * float(r[3])
+            self._paper_positions[int(r[0])] = {
+                "symbol": r[1], "qty": float(r[3]), "cost": cost
+            }
             deployed += cost
         self._paper_cash = max(self._paper_start - deployed, 0.0)
         # Keep the order counter ahead of any existing paper order ids.
@@ -60,8 +62,15 @@ class OrderManager:
         return self._paper_cash
 
     def equity(self) -> float:
-        """Cash + cost basis of open positions = starting balance + realized PnL."""
-        return self._paper_cash + sum(self._paper_positions.values())
+        """Cash + mark-to-market value of open positions."""
+        position_value = 0.0
+        for pos in self._paper_positions.values():
+            try:
+                ticker = self.client.fetch_ticker(pos["symbol"])
+                position_value += ticker["last"] * pos["qty"]
+            except Exception:
+                position_value += pos["cost"]  # fallback to cost basis
+        return self._paper_cash + position_value
 
     def place_market_buy(
         self,
@@ -85,22 +94,27 @@ class OrderManager:
 
             if self.paper_mode:
                 order = self._paper_order(symbol, "buy", quantity, price)
+                fill_price = price  # simulated fill at last
             else:
                 order = self.client.create_market_order(symbol, "buy", quantity)
+                # Bug #2 fix: use actual exchange fill price, not the pre-order ticker
+                fill_price = float(order.get("average") or order.get("price") or price)
 
             trade_id = self._log_trade(
-                symbol, strategy, "buy", price, quantity,
+                symbol, strategy, "buy", fill_price, quantity,
                 stop_loss, take_profit, ml_confidence, signal_id,
             )
 
             if self.paper_mode and trade_id:
-                cost = quantity * price
+                cost = quantity * fill_price
                 self._paper_cash -= cost
-                self._paper_positions[trade_id] = cost
+                self._paper_positions[trade_id] = {
+                    "symbol": symbol, "qty": quantity, "cost": cost
+                }
 
             prefix = "[PAPER] " if self.paper_mode else ""
-            logger.info(f"{prefix}BUY {quantity:.6f} {symbol} @ {price:.4f} | {strategy}")
-            return {"order": order, "trade_id": trade_id, "price": price, "quantity": quantity}
+            logger.info(f"{prefix}BUY {quantity:.6f} {symbol} @ {fill_price:.4f} | {strategy}")
+            return {"order": order, "trade_id": trade_id, "price": fill_price, "quantity": quantity}
         except Exception as e:
             logger.error(f"Buy order failed for {symbol}: {e}")
             return None
@@ -118,19 +132,22 @@ class OrderManager:
 
             if self.paper_mode:
                 order = self._paper_order(symbol, "sell", quantity, price)
+                fill_price = price
             else:
                 order = self.client.create_market_order(symbol, "sell", quantity)
+                fill_price = float(order.get("average") or order.get("price") or price)
 
-            if self.paper_mode:
-                self._paper_cash += quantity * price
+            # Bug #3 fix: commit DB first; only update in-memory wallet on success
+            # to prevent phantom cash from a failed DB write on restart reconciliation.
+            close_ok = self._close_trade(trade_id, fill_price) if trade_id else True
+
+            if self.paper_mode and close_ok:
+                self._paper_cash += quantity * fill_price
                 self._paper_positions.pop(trade_id, None)
 
-            if trade_id:
-                self._close_trade(trade_id, price)
-
             prefix = "[PAPER] " if self.paper_mode else ""
-            logger.info(f"{prefix}SELL {quantity:.6f} {symbol} @ {price:.4f}")
-            return {"order": order, "price": price, "quantity": quantity}
+            logger.info(f"{prefix}SELL {quantity:.6f} {symbol} @ {fill_price:.4f}")
+            return {"order": order, "price": fill_price, "quantity": quantity}
         except Exception as e:
             logger.error(f"Sell order failed for {symbol}: {e}")
             return None
@@ -177,14 +194,14 @@ class OrderManager:
         finally:
             session.close()
 
-    def _close_trade(self, trade_id: int, exit_price: float):
+    def _close_trade(self, trade_id: int, exit_price: float) -> bool:
         session = get_session()
         try:
             trade = session.execute(
                 text("SELECT * FROM trades WHERE id=:id"), {"id": trade_id}
             ).fetchone()
             if not trade:
-                return
+                return False
 
             entry = float(trade.entry_price)
             qty = float(trade.quantity)
@@ -212,8 +229,10 @@ class OrderManager:
                 """), {"outcome": outcome, "pnl_pct": pnl_pct, "trade_id": trade_id, "signal_id": trade.signal_id})
 
             session.commit()
+            return True
         except Exception as e:
             session.rollback()
             logger.error(f"Failed to close trade {trade_id}: {e}")
+            return False
         finally:
             session.close()

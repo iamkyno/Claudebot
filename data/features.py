@@ -39,18 +39,20 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df["stoch_k"] = stoch.stoch()
     df["stoch_d"] = stoch.stoch_signal()
 
-    df["price_change_1"] = df["close"].pct_change(1)
-    df["price_change_4"] = df["close"].pct_change(4)
-    df["price_change_24"] = df["close"].pct_change(24)
+    df["price_change_1h"] = df["close"].pct_change(1)
+    df["price_change_4h"] = df["close"].pct_change(4)
+    df["price_change_24h"] = df["close"].pct_change(24)
 
     df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx()
     df["roc"] = ta.momentum.ROCIndicator(df["close"], window=12).roc()
 
-    # VWAP — running volume-weighted average price over the loaded window.
-    # On low timeframes (1m/5m) this is the intraday mean scalpers fade toward.
+    # VWAP resets at midnight UTC each day so scalpers get a true intraday mean.
     typical = (df["high"] + df["low"] + df["close"]) / 3
-    cum_vol = df["volume"].cumsum().replace(0, np.nan)
-    df["vwap"] = (typical * df["volume"]).cumsum() / cum_vol
+    dates = df.index.normalize()
+    df["vwap"] = (
+        (typical * df["volume"]).groupby(dates).cumsum()
+        / df["volume"].groupby(dates).cumsum().replace(0, np.nan)
+    )
 
     return df
 
@@ -62,6 +64,6 @@ def get_feature_columns() -> list:
         "ema_9", "ema_21", "ema_50",
         "atr", "volume_ratio", "obv",
         "stoch_k", "stoch_d",
-        "price_change_1", "price_change_4", "price_change_24",
+        "price_change_1h", "price_change_4h", "price_change_24h",
         "adx", "roc",
     ]

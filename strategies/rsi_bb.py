@@ -52,9 +52,9 @@ class RSIBBStrategy(BaseStrategy):
             "macd": float(last["macd"]) if pd.notna(last.get("macd")) else None,
             "macd_signal": float(last["macd_signal"]) if pd.notna(last.get("macd_signal")) else None,
             "volume_ratio": vol_ratio, "atr": atr,
-            "price_change_1": float(last["price_change_1"]) if pd.notna(last.get("price_change_1")) else None,
-            "price_change_4": float(last["price_change_4"]) if pd.notna(last.get("price_change_4")) else None,
-            "price_change_24": float(last["price_change_24"]) if pd.notna(last.get("price_change_24")) else None,
+            "price_change_1h": float(last["price_change_1h"]) if pd.notna(last.get("price_change_1h")) else None,
+            "price_change_4h": float(last["price_change_4h"]) if pd.notna(last.get("price_change_4h")) else None,
+            "price_change_24h": float(last["price_change_24h"]) if pd.notna(last.get("price_change_24h")) else None,
         }
 
         # Buy: adaptive oversold + lower BB + volume spike

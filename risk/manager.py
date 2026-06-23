@@ -39,10 +39,11 @@ class RiskManager:
         return True
 
     def adjust_for_ml_confidence(self, position_size: float, confidence: float) -> float:
-        """Scale size 0.5x–1.5x based on ML confidence. Reject below threshold."""
+        """Scale size 0.5x–1.0x based on ML confidence. Reject below threshold.
+        Max is 1.0x so ML can only reduce size, never exceed the risk-managed cap."""
         if confidence < 0.60:
             return 0.0
-        scale = min((confidence - 0.60) / 0.40 + 0.5, 1.5)
+        scale = min((confidence - 0.60) / 0.40 * 0.5 + 0.5, 1.0)
         return round(position_size * scale, 2)
 
     def stop_loss_price(self, price: float, atr: float, side: str = "buy") -> float:

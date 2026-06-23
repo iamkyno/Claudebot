@@ -191,6 +191,10 @@ class Orchestrator:
         tv_score = self.tv.score(symbol) if self.tv else None
 
         for strategy in self.strategies:
+            # Bug #5 fix: re-check kill switch each iteration so a loss that
+            # crosses the daily limit mid-tick stops further entries immediately.
+            if self.guards.is_killed:
+                break
             if strategy.name == "pair_trading" or not strategy.is_enabled():
                 continue
             if self.guards.check_strategy_kill(strategy.name, equity):
@@ -302,6 +306,8 @@ class Orchestrator:
 
         for symbol in scalp_symbols:
             try:
+                if self.guards.is_killed:
+                    break
                 if self.guards.check_strategy_kill("scalp", equity):
                     break
                 if not self.risk.can_open_position(open_trades, "scalp", free):

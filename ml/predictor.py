@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 FEATURE_ORDER = [
     "rsi", "macd", "macd_signal", "bb_upper", "bb_lower", "bb_position",
     "ema_9", "ema_21", "ema_50", "atr", "volume_ratio",
-    "price_change_1", "price_change_4", "price_change_24",
+    "price_change_1h", "price_change_4h", "price_change_24h",
     "funding_rate", "orderbook_imbalance", "tv_recommendation",
 ]
 
@@ -53,7 +53,7 @@ class SignalPredictor:
         if self._model is None and not self.load_model():
             return 0.5
         try:
-            vals = [features.get(f) or 0 for f in FEATURE_ORDER]
+            vals = [0 if features.get(f) is None else features.get(f) for f in FEATURE_ORDER]
             X = np.array(vals, dtype=float).reshape(1, -1)
             return float(self._model.predict_proba(X)[0][1])
         except Exception as e:
@@ -101,8 +101,8 @@ class SignalPredictor:
                 "bb_lower": f.get("bb_lower"), "bb_position": f.get("bb_position"),
                 "ema_9": f.get("ema_9"), "ema_21": f.get("ema_21"), "ema_50": f.get("ema_50"),
                 "atr": f.get("atr"), "volume_ratio": f.get("volume_ratio"),
-                "pc1h": f.get("price_change_1"), "pc4h": f.get("price_change_4"),
-                "pc24h": f.get("price_change_24"),
+                "pc1h": f.get("price_change_1h"), "pc4h": f.get("price_change_4h"),
+                "pc24h": f.get("price_change_24h"),
                 "funding_rate": f.get("funding_rate"),
                 "ob_imbalance": f.get("orderbook_imbalance"),
                 "tv": f.get("tv_recommendation"),
