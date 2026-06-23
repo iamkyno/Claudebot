@@ -31,6 +31,11 @@ ml:
 telegram:
   enabled: false
 
+dashboard:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
 bot:
   loop_interval_seconds: 60
   paper_mode: true               # set to false when ready to go live
