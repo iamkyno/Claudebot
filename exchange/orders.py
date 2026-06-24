@@ -37,6 +37,12 @@ class OrderManager:
             rows = session.execute(text(
                 "SELECT id, symbol, entry_price, quantity FROM trades WHERE status='open'"
             )).fetchall()
+            # Realized PnL from already-closed trades must persist across
+            # restarts. Without it, cash resets to start-minus-deployed and
+            # every prior gain or loss silently vanishes from the wallet.
+            realized = float(session.execute(text(
+                "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='closed'"
+            )).scalar() or 0.0)
         finally:
             session.close()
 
@@ -48,13 +54,14 @@ class OrderManager:
                 "symbol": r[1], "qty": float(r[3]), "cost": cost
             }
             deployed += cost
-        self._paper_cash = max(self._paper_start - deployed, 0.0)
+        self._paper_cash = max(self._paper_start + realized - deployed, 0.0)
         # Keep the order counter ahead of any existing paper order ids.
         if rows:
             self._paper_counter = max(self._paper_counter, max(int(r[0]) for r in rows) + 1)
             logger.info(
                 f"[PAPER] Reconciled {len(rows)} open position(s): "
-                f"${deployed:,.2f} deployed, ${self._paper_cash:,.2f} cash free"
+                f"${deployed:,.2f} deployed, ${realized:+,.2f} realized, "
+                f"${self._paper_cash:,.2f} cash free"
             )
 
     def free_cash(self) -> float:

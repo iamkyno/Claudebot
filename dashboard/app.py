@@ -44,6 +44,20 @@ async def summary():
             WHERE DATE(exit_time) = CURRENT_DATE AND status = 'closed'
         """)).fetchone()
 
+        # Unrealized PnL on open positions, marked to the latest cached price.
+        # equity = start + realized + unrealized — same definition the bot's
+        # in-memory wallet uses, so terminal and dashboard agree.
+        unreal_row = session.execute(text("""
+            SELECT COALESCE(SUM(
+                (COALESCE(
+                    (SELECT c.close_price FROM ohlcv_cache c
+                     WHERE c.symbol = t.symbol
+                     ORDER BY c.open_time DESC LIMIT 1),
+                    t.entry_price) - t.entry_price) * t.quantity), 0),
+                COALESCE(SUM(t.entry_price * t.quantity), 0)
+            FROM trades t WHERE t.status = 'open'
+        """)).fetchone()
+
         ml_row = session.execute(text("""
             SELECT version, accuracy, f1_score, training_samples, trained_at
             FROM ml_models
@@ -57,11 +71,16 @@ async def summary():
         open_count  = int(row[3] or 0) if row else 0
         today_pnl   = float(today_row[0]) if today_row else 0.0
         today_count = int(today_row[1])   if today_row else 0
+        unreal_pnl  = float(unreal_row[0]) if unreal_row else 0.0
+        deployed    = float(unreal_row[1]) if unreal_row else 0.0
         closed = total - open_count
 
         return {
-            "equity":        round(paper_balance + total_pnl, 2),
+            "equity":        round(paper_balance + total_pnl + unreal_pnl, 2),
+            "free_cash":     round(paper_balance + total_pnl - deployed, 2),
+            "deployed":      round(deployed + unreal_pnl, 2),
             "total_pnl":     round(total_pnl, 2),
+            "unrealized_pnl": round(unreal_pnl, 2),
             "today_pnl":     round(today_pnl, 2),
             "today_trades":  today_count,
             "total_trades":  total,
