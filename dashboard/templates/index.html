@@ -93,21 +93,48 @@ body { background: var(--bg); color: var(--t1); font-family: var(--sans); font-s
 
 /* section box */
 .box {
-  background: var(--s1);
+  position: relative;
+  background: linear-gradient(180deg, var(--s2) 0%, var(--s1) 64px);
   border: 1px solid var(--b1);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.025) inset,
+    0 1px 2px rgba(0,0,0,.4),
+    0 8px 24px -12px rgba(0,0,0,.55);
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+.box:hover {
+  border-color: var(--b2);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.04) inset,
+    0 1px 2px rgba(0,0,0,.4),
+    0 10px 30px -12px rgba(0,0,0,.6);
 }
 .box-head {
+  position: relative;
   display: flex; align-items: center; justify-content: space-between;
-  padding: 7px 12px;
-  background: var(--s2);
+  padding: 9px 13px 9px 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.022), rgba(255,255,255,0));
   border-bottom: 1px solid var(--b1);
-  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--t2);
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .11em; color: var(--t1);
 }
+/* accent tick on the left edge of every header — color per section */
+.box-head::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 13px; border-radius: 0 2px 2px 0;
+  background: linear-gradient(180deg, var(--g), rgba(0,200,150,.35));
+  box-shadow: 0 0 8px rgba(0,200,150,.4);
+}
+.box-head.ac-blue::before  { background: linear-gradient(180deg, var(--b), rgba(75,142,247,.35));  box-shadow: 0 0 8px rgba(75,142,247,.4); }
+.box-head.ac-amber::before { background: linear-gradient(180deg, var(--am), rgba(245,166,35,.35)); box-shadow: 0 0 8px rgba(245,166,35,.4); }
+.box-head.ac-purple::before{ background: linear-gradient(180deg, #a78bfa, rgba(167,139,250,.35)); box-shadow: 0 0 8px rgba(167,139,250,.4); }
+.box-head.ac-red::before   { background: linear-gradient(180deg, var(--r), rgba(240,75,96,.35));   box-shadow: 0 0 8px rgba(240,75,96,.4); }
 .box-head .bcount {
-  font-size: 10px; font-family: var(--mono); font-weight: 500;
-  background: var(--s3); border: 1px solid var(--b1); padding: 1px 7px; border-radius: 3px; color: var(--t2);
+  font-size: 10px; font-family: var(--mono); font-weight: 600;
+  background: var(--s3); border: 1px solid var(--b2); padding: 1.5px 8px; border-radius: 4px;
+  color: var(--t1); letter-spacing: .04em;
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
 }
 
 /* two + three column grids */
@@ -242,7 +269,7 @@ td.c { text-align: center; }
       <div id="chart-wrap"><canvas id="pnlChart"></canvas></div>
     </div>
     <div class="box">
-      <div class="box-head">Strategy Performance</div>
+      <div class="box-head ac-blue">Strategy Performance</div>
       <div id="strat-list" class="strat-list">
         <div class="empty-state">Waiting for trades…</div>
       </div>
@@ -251,7 +278,7 @@ td.c { text-align: center; }
 
   <!-- ── Row 2: Open Positions ── -->
   <div class="box">
-    <div class="box-head">
+    <div class="box-head ac-amber">
       Open Positions
       <span class="bcount" id="c-open">0</span>
     </div>
@@ -262,6 +289,8 @@ td.c { text-align: center; }
           <th>Symbol</th>
           <th>Strategy</th>
           <th class="r">Entry Price</th>
+          <th class="r">Current</th>
+          <th class="r">Unreal. PnL</th>
           <th class="r">Quantity</th>
           <th class="r">Value (USDT)</th>
           <th class="r">Stop Loss</th>
@@ -270,7 +299,7 @@ td.c { text-align: center; }
           <th class="r">Opened</th>
         </tr></thead>
         <tbody id="open-body">
-          <tr><td colspan="10"><div class="empty-state">No open positions</div></td></tr>
+          <tr><td colspan="12"><div class="empty-state">No open positions</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -279,7 +308,7 @@ td.c { text-align: center; }
   <!-- ── Row 3: Closed Trades + Liq Feed ── -->
   <div class="row2">
     <div class="box">
-      <div class="box-head">Recent Closed Trades</div>
+      <div class="box-head ac-purple">Recent Closed Trades</div>
       <div class="tbl-wrap">
         <table>
           <thead><tr>
@@ -301,7 +330,7 @@ td.c { text-align: center; }
       </div>
     </div>
     <div class="box">
-      <div class="box-head">Liquidation Feed</div>
+      <div class="box-head ac-red">Liquidation Feed</div>
       <div class="tbl-wrap">
         <table>
           <thead><tr>
@@ -442,12 +471,14 @@ async function loadOpen() {
   let dep = 0; trades.forEach(t => dep += t.value_usdt||0);
   $('tb-dep').innerHTML = `<span class="num ${dep>0?'g':'dim'}">$${f(dep,0)}</span>`;
   const b = $('open-body');
-  if (!trades.length) { b.innerHTML = '<tr><td colspan="10"><div class="empty-state">No open positions</div></td></tr>'; return; }
+  if (!trades.length) { b.innerHTML = '<tr><td colspan="12"><div class="empty-state">No open positions</div></td></tr>'; return; }
   b.innerHTML = trades.map((t,i) => `<tr>
     <td class="dim num">${i+1}</td>
     <td>${sym(t.symbol)}</td>
     <td>${stag(t.strategy)}</td>
     <td class="r num">$${fp(t.entry_price)}</td>
+    <td class="r num ${t.current_price==null?'dim':cls(t.unrealized_pnl)}">${t.current_price!=null ? '$'+fp(t.current_price) : '--'}</td>
+    <td class="r num ${cls(t.unrealized_pnl)}">${t.unrealized_pnl!=null ? spnl(t.unrealized_pnl)+' <span style="opacity:.65">'+pct(t.unrealized_pnl_pct)+'</span>' : '<span class="dim">--</span>'}</td>
     <td class="r num">${f(t.quantity,6)}</td>
     <td class="r num">$${f(t.value_usdt)}</td>
     <td class="r num r-c">${t.stop_loss ? '$'+fp(t.stop_loss) : '<span class="dim">--</span>'}</td>

@@ -85,28 +85,40 @@ async def summary():
 async def open_trades():
     session = get_session()
     try:
+        # Latest cached close per symbol = best available "current" price.
+        # The fetcher writes every candle to ohlcv_cache each tick.
         rows = session.execute(text("""
-            SELECT id, symbol, strategy, side, entry_price, quantity,
-                   stop_loss, take_profit, ml_confidence, entry_time
-            FROM trades WHERE status = 'open'
-            ORDER BY entry_time DESC
+            SELECT t.id, t.symbol, t.strategy, t.side, t.entry_price, t.quantity,
+                   t.stop_loss, t.take_profit, t.ml_confidence, t.entry_time,
+                   (SELECT c.close_price FROM ohlcv_cache c
+                    WHERE c.symbol = t.symbol
+                    ORDER BY c.open_time DESC LIMIT 1) AS current_price
+            FROM trades t WHERE t.status = 'open'
+            ORDER BY t.entry_time DESC
         """)).fetchall()
-        return [
-            {
+        out = []
+        for r in rows:
+            entry = float(r[4])
+            qty = float(r[5])
+            current = float(r[10]) if r[10] is not None else None
+            mkt_price = current if current is not None else entry
+            out.append({
                 "id":            r[0],
                 "symbol":        r[1],
                 "strategy":      r[2],
                 "side":          r[3],
-                "entry_price":   float(r[4]),
-                "quantity":      float(r[5]),
-                "value_usdt":    round(float(r[4]) * float(r[5]), 2),
+                "entry_price":   entry,
+                "current_price": current,
+                "quantity":      qty,
+                "value_usdt":    round(mkt_price * qty, 2),
+                "unrealized_pnl":     round((mkt_price - entry) * qty, 2),
+                "unrealized_pnl_pct": round((mkt_price - entry) / entry * 100, 2) if entry else None,
                 "stop_loss":     float(r[6]) if r[6] else None,
                 "take_profit":   float(r[7]) if r[7] else None,
                 "ml_confidence": round(float(r[8]) * 100, 1) if r[8] else None,
                 "entry_time":    r[9].strftime("%Y-%m-%d %H:%M") if r[9] else None,
-            }
-            for r in rows
-        ]
+            })
+        return out
     finally:
         session.close()
 
