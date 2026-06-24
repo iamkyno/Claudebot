@@ -2,6 +2,7 @@ import logging
 import time
 from datetime import date, datetime
 
+import pandas as pd
 from sqlalchemy import text
 
 from config.settings import get_config, get_secrets
@@ -10,9 +11,12 @@ from data.fetcher import DataFetcher
 from data.features import compute_features
 from data.symbol_selector import SymbolSelector
 from data.tradingview import TradingViewAnalyzer
+from data.regime import classify_regime, regime_allows
+from data.sentiment import SentimentFeed
 from exchange.client import BinanceClient
 from exchange.orders import OrderManager
 from exchange.liquidation_feed import LiquidationFeed
+from exchange.price_stream import PriceStream
 from risk.manager import RiskManager
 from risk.guards import RiskGuards
 from ml.trainer import ModelTrainer
@@ -40,8 +44,30 @@ class Orchestrator:
 
         self.exchange = BinanceClient()
         self.fetcher = DataFetcher(self.exchange)
+
+        # Real-time price stream (one WS for all symbols) — makes fills, the
+        # scalper and trailing stops react in ms instead of once per minute.
+        feat = cfg.get("features", {})
+        self.f_websocket   = feat.get("websocket_prices", True)
+        self.f_shorts      = feat.get("short_selling", True)
+        self.f_trailing    = feat.get("trailing_stops", True)
+        self.f_partial_tp  = feat.get("partial_take_profit", True)
+        self.f_regime      = feat.get("regime_filter", True)
+        self.f_mtf         = feat.get("mtf_confirmation", True)
+        self.f_sentiment   = feat.get("sentiment_filter", True)
+        self.f_sharpe_size = feat.get("sharpe_sizing", True)
+        self.htf_timeframe = feat.get("htf_timeframe", "4h")
+        self.tp1_ratio     = feat.get("tp1_ratio", 0.5)   # trigger: fraction of the way to TP
+        self.tp1_close     = feat.get("tp1_close_fraction", 0.5)  # how much to bank
+        self._sent_snapshot = None
+
+        self.price_stream = PriceStream() if self.f_websocket else None
+        if self.price_stream:
+            self.price_stream.start()
+
         self.orders = OrderManager(
-            self.exchange, paper_mode=self.paper_mode, paper_balance=paper_balance
+            self.exchange, paper_mode=self.paper_mode, paper_balance=paper_balance,
+            price_stream=self.price_stream,
         )
         # Resume cleanly: rebuild the paper wallet from any positions left open
         # by a previous run so a restart doesn't reset cash or lose positions.
@@ -49,6 +75,7 @@ class Orchestrator:
 
         self.risk = RiskManager(cfg["risk"])
         self.guards = RiskGuards(cfg["risk"])
+        self.sentiment = SentimentFeed() if self.f_sentiment else None
 
         # All strategies receive only the risk config — thresholds are self-computed
         risk_cfg = cfg["risk"]
@@ -133,6 +160,8 @@ class Orchestrator:
             except KeyboardInterrupt:
                 logger.info("Stopped by user")
                 self._liq_feed.stop()
+                if self.price_stream:
+                    self.price_stream.stop()
                 break
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
@@ -161,6 +190,9 @@ class Orchestrator:
             self.symbols = self._selector.get_symbols(refresh=True)
             self._last_symbol_refresh = datetime.utcnow()
 
+        # One market-wide sentiment read per tick (TTL-cached underneath).
+        self._sent_snapshot = self.sentiment.snapshot() if self.sentiment else None
+
         open_trades = self.orders.get_open_trades()
         self._check_exits(open_trades)
 
@@ -186,6 +218,9 @@ class Orchestrator:
             return open_trades
         df = compute_features(df)
 
+        regime = classify_regime(df) if self.f_regime else None
+        htf_dir = self._htf_direction(symbol) if self.f_mtf else None
+
         funding_rate = self._get_funding_rate(symbol)
         ob_imbalance = self.exchange.get_orderbook_imbalance(symbol)
         tv_score = self.tv.score(symbol) if self.tv else None
@@ -196,6 +231,9 @@ class Orchestrator:
             if self.guards.is_killed:
                 break
             if strategy.name == "pair_trading" or not strategy.is_enabled():
+                continue
+            # Regime gate: only run a strategy in the market regime it suits.
+            if regime is not None and not regime_allows(strategy.name, regime):
                 continue
             if self.guards.check_strategy_kill(strategy.name, equity):
                 continue
@@ -209,12 +247,25 @@ class Orchestrator:
                 kwargs["funding_rate"] = funding_rate
 
             signal = strategy.generate_signal(symbol, df, **kwargs)
-            if signal is None or signal.signal_type != "buy":
+            if signal is None or signal.signal_type not in ("buy", "sell"):
+                continue
+            side = signal.signal_type
+            if side == "sell" and not self.f_shorts:
                 continue
 
-            # TradingView consensus: skip buys the broader market reads as bearish.
-            if tv_score is not None and tv_score <= self.tv_veto:
+            # Higher-timeframe gate: don't fight the 4h trend.
+            if htf_dir == "up" and side == "sell":
+                continue
+            if htf_dir == "down" and side == "buy":
+                continue
+
+            # TradingView consensus: skip longs the broader market reads bearish.
+            if side == "buy" and tv_score is not None and tv_score <= self.tv_veto:
                 logger.debug(f"TV veto {symbol}/{strategy.name} tv={tv_score:.2f}")
+                continue
+
+            # Market-wide sentiment gate.
+            if not self._sentiment_ok(side):
                 continue
 
             signal.features["funding_rate"] = funding_rate
@@ -223,33 +274,49 @@ class Orchestrator:
 
             ok, ml_conf = self.predictor.should_trade(signal.features)
             signal_id = self.predictor.log_signal(
-                symbol, strategy.name, signal.signal_type, ml_conf, signal.features
+                symbol, strategy.name, side, ml_conf, signal.features
             )
 
             if not ok:
                 logger.debug(f"ML rejected {symbol}/{strategy.name} conf={ml_conf:.3f}")
                 continue
 
-            atr = float(df.iloc[-1].get("atr", 0)) or float(df.iloc[-1]["close"]) * 0.01
+            price = float(df.iloc[-1]["close"])
+            atr = float(df.iloc[-1].get("atr", 0)) or price * 0.01
+
+            # Some 'sell' signals are bearish *exit alerts* with no bracket —
+            # derive a proper short bracket from ATR when entering a short.
+            stop_loss, take_profit = signal.stop_loss, signal.take_profit
+            if not stop_loss or stop_loss <= 0:
+                stop_loss = self.risk.stop_loss_price(price, atr, side)
+            if not take_profit or take_profit <= 0:
+                take_profit = self.risk.take_profit_price(price, atr, side)
+
+            risk_dist = abs(price - stop_loss)
+            reward_risk = abs(take_profit - price) / risk_dist if risk_dist > 0 else 2.0
+
             size = self.risk.calculate_position_size(
-                free, float(df.iloc[-1]["close"]), atr, signal.stop_loss
+                free, price, atr, stop_loss,
+                win_prob=ml_conf if self.predictor.has_model else None,
+                reward_risk=reward_risk,
             )
-            # Only scale by ML confidence once a model exists; during bootstrap
-            # this would otherwise zero out every trade.
             if self.predictor.has_model:
                 size = self.risk.adjust_for_ml_confidence(size, ml_conf)
+            # Capital allocation by rolling risk-adjusted performance.
+            if self.f_sharpe_size:
+                size = round(size * self.guards.strategy_size_multiplier(strategy.name), 2)
             if size <= 0:
                 continue
 
-            result = self.orders.place_market_buy(
-                symbol=symbol, usdt_amount=size, strategy=strategy.name,
-                stop_loss=signal.stop_loss, take_profit=signal.take_profit,
+            result = self.orders.open_position(
+                symbol=symbol, side=side, usdt_amount=size, strategy=strategy.name,
+                stop_loss=stop_loss, take_profit=take_profit,
                 ml_confidence=ml_conf, signal_id=signal_id,
             )
             if result:
                 self.notifier.trade_opened(
-                    symbol, "buy", result["price"], result["quantity"],
-                    strategy.name, ml_conf, signal.stop_loss, signal.take_profit,
+                    symbol, side, result["price"], result["quantity"],
+                    strategy.name, ml_conf, stop_loss, take_profit,
                 )
                 self._trades_since_retrain += 1
                 open_trades = self.orders.get_open_trades()  # refresh after new trade
@@ -344,11 +411,17 @@ class Orchestrator:
 
                 price = float(df.iloc[-1]["close"])
                 atr = float(df.iloc[-1].get("atr", 0)) or price * 0.005
+                rr = (abs(signal.take_profit - price) / abs(price - signal.stop_loss)
+                      if signal.stop_loss and abs(price - signal.stop_loss) > 0 else 2.0)
                 size = self.risk.calculate_position_size(
-                    free, price, atr, signal.stop_loss
+                    free, price, atr, signal.stop_loss,
+                    win_prob=ml_conf if self.predictor.has_model else None,
+                    reward_risk=rr,
                 )
                 if self.predictor.has_model:
                     size = self.risk.adjust_for_ml_confidence(size, ml_conf)
+                if self.f_sharpe_size:
+                    size = round(size * self.guards.strategy_size_multiplier("scalp"), 2)
                 if size <= 0:
                     continue
 
@@ -371,25 +444,127 @@ class Orchestrator:
     def _check_exits(self, open_trades: list):
         for trade in open_trades:
             strat = self._exit_lookup.get(trade.strategy)
-            if strat is None:
-                continue
             # Scalp trades are exited on their own (fast) timeframe.
             tf = getattr(strat, "timeframe", None) or self.timeframe
             df = self.fetcher.fetch_ohlcv(trade.symbol, tf)
             if df.empty:
                 continue
-            trade_dict = dict(trade._mapping)
-            if strat.should_exit(trade.symbol, df, trade_dict):
-                result = self.orders.place_market_sell(
-                    symbol=trade.symbol, quantity=float(trade.quantity),
-                    strategy=trade.strategy, trade_id=trade.id,
+
+            side = getattr(trade, "side", "buy") or "buy"
+            price = self._price(trade.symbol, df)
+            atr = float(df.iloc[-1].get("atr", 0)) or price * 0.01
+
+            # 1) Trailing stop — ratchet the stop toward price, never away.
+            if self.f_trailing:
+                self._update_trailing(trade, side, price, atr)
+
+            # 2) Partial take-profit — bank a slice at TP1, stop to breakeven.
+            if self.f_partial_tp and not getattr(trade, "tp1_filled", 0):
+                if self._tp1_reached(trade, side, price):
+                    r = self.orders.close_position(
+                        trade.symbol, float(trade.quantity), trade.id,
+                        side=side, fraction=self.tp1_close,
+                    )
+                    if r:
+                        self._trades_since_retrain += 1
+                    continue  # re-evaluate the remainder next tick
+
+            # 3) Hard bracket (side-aware) or strategy discretionary exit.
+            exit_now = self._hard_exit(trade, side, price)
+            if not exit_now and side == "buy" and strat is not None:
+                # Strategy exits are written long-centric; only apply to longs.
+                try:
+                    exit_now = strat.should_exit(trade.symbol, df, dict(trade._mapping))
+                except Exception:
+                    exit_now = False
+
+            if exit_now:
+                result = self.orders.close_position(
+                    trade.symbol, float(trade.quantity), trade.id,
+                    side=side, fraction=1.0,
                 )
                 if result:
-                    price = result["price"]
-                    pnl = (price - float(trade.entry_price)) * float(trade.quantity)
-                    pnl_pct = (price - float(trade.entry_price)) / float(trade.entry_price)
+                    ep = result["price"]
+                    entry = float(trade.entry_price)
+                    direction = 1 if side == "buy" else -1
+                    pnl = (ep - entry) * float(trade.quantity) * direction
+                    pnl_pct = (ep - entry) / entry * direction
                     self.notifier.trade_closed(trade.symbol, pnl, pnl_pct, trade.strategy)
                     self._trades_since_retrain += 1
+
+    # -- exit helpers --------------------------------------------------- #
+
+    def _price(self, symbol: str, df: pd.DataFrame) -> float:
+        if self.price_stream:
+            p = self.price_stream.get_price(symbol)
+            if p:
+                return float(p)
+        return float(df.iloc[-1]["close"])
+
+    def _hard_exit(self, trade, side: str, price: float) -> bool:
+        stop = float(trade.stop_loss) if trade.stop_loss else None
+        tp = float(trade.take_profit) if trade.take_profit else None
+        if side == "buy":
+            return bool((stop and price <= stop) or (tp and price >= tp))
+        return bool((stop and price >= stop) or (tp and price <= tp))
+
+    def _tp1_reached(self, trade, side: str, price: float) -> bool:
+        tp = float(trade.take_profit) if trade.take_profit else 0.0
+        if tp <= 0:
+            return False
+        entry = float(trade.entry_price)
+        tp1 = entry + (tp - entry) * self.tp1_ratio
+        return price >= tp1 if side == "buy" else price <= tp1
+
+    def _update_trailing(self, trade, side: str, price: float, atr: float):
+        if side == "buy":
+            hi = float(trade.highest_price) if trade.highest_price else float(trade.entry_price)
+            if price > hi:
+                self.orders.record_high_low(trade.id, highest=price)
+                new_stop = self.risk.trailing_stop("buy", price, atr)
+                cur = float(trade.stop_loss) if trade.stop_loss else 0.0
+                if new_stop > cur:
+                    self.orders.update_stop(trade.id, new_stop)
+        else:
+            lo = float(trade.lowest_price) if trade.lowest_price else float(trade.entry_price)
+            if price < lo:
+                self.orders.record_high_low(trade.id, lowest=price)
+                new_stop = self.risk.trailing_stop("sell", price, atr)
+                cur = float(trade.stop_loss) if trade.stop_loss else 1e18
+                if new_stop < cur:
+                    self.orders.update_stop(trade.id, new_stop)
+
+    def _htf_direction(self, symbol: str):
+        """4h trend direction gate: 'up', 'down', or None (mixed/unknown)."""
+        try:
+            df = self.fetcher.fetch_ohlcv(symbol, self.htf_timeframe, limit=120)
+            if df.empty or len(df) < 55:
+                return None
+            last = compute_features(df).iloc[-1]
+            if pd.isna(last.get("ema_21")) or pd.isna(last.get("ema_50")):
+                return None
+            e21, e50, close = float(last["ema_21"]), float(last["ema_50"]), float(last["close"])
+            if e21 >= e50 and close >= e21:
+                return "up"
+            if e21 < e50 and close < e21:
+                return "down"
+            return None
+        except Exception:
+            return None
+
+    def _sentiment_ok(self, side: str) -> bool:
+        snap = self._sent_snapshot
+        if not snap:
+            return True
+        if side == "buy":
+            # Don't buy into a euphoric, over-leveraged-long market.
+            if snap.get("extreme_greed") and snap.get("overleveraged_long"):
+                return False
+        else:
+            # Don't short into capitulation — squeezes are vicious.
+            if snap.get("extreme_fear"):
+                return False
+        return True
 
     def _retrain(self):
         logger.info("Retraining ML model…")

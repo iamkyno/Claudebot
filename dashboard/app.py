@@ -53,7 +53,8 @@ async def summary():
                     (SELECT c.close_price FROM ohlcv_cache c
                      WHERE c.symbol = t.symbol
                      ORDER BY c.open_time DESC LIMIT 1),
-                    t.entry_price) - t.entry_price) * t.quantity), 0),
+                    t.entry_price) - t.entry_price) * t.quantity
+                * (CASE WHEN t.side = 'buy' THEN 1 ELSE -1 END)), 0),
                 COALESCE(SUM(t.entry_price * t.quantity), 0)
             FROM trades t WHERE t.status = 'open'
         """)).fetchone()
@@ -119,19 +120,23 @@ async def open_trades():
         for r in rows:
             entry = float(r[4])
             qty = float(r[5])
+            side = r[3]
+            direction = 1 if side == "buy" else -1   # short PnL is inverted
             current = float(r[10]) if r[10] is not None else None
             mkt_price = current if current is not None else entry
+            unreal = (mkt_price - entry) * qty * direction
             out.append({
                 "id":            r[0],
                 "symbol":        r[1],
                 "strategy":      r[2],
-                "side":          r[3],
+                "side":          side,
                 "entry_price":   entry,
                 "current_price": current,
                 "quantity":      qty,
-                "value_usdt":    round(mkt_price * qty, 2),
-                "unrealized_pnl":     round((mkt_price - entry) * qty, 2),
-                "unrealized_pnl_pct": round((mkt_price - entry) / entry * 100, 2) if entry else None,
+                # value = reserved margin + unrealized (matches bot equity)
+                "value_usdt":    round(entry * qty + unreal, 2),
+                "unrealized_pnl":     round(unreal, 2),
+                "unrealized_pnl_pct": round((mkt_price - entry) / entry * 100 * direction, 2) if entry else None,
                 "stop_loss":     float(r[6]) if r[6] else None,
                 "take_profit":   float(r[7]) if r[7] else None,
                 "ml_confidence": round(float(r[8]) * 100, 1) if r[8] else None,

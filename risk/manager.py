@@ -9,11 +9,20 @@ class RiskManager:
         self.atr_stop_mult = config.get("atr_stop_multiplier", 1.5)
         self.max_concurrent = config.get("max_concurrent_positions", 8)
         self.cash_reserve = config.get("cash_reserve_pct", 0.20)
+        # Kelly sizing: fraction of full-Kelly to actually bet (half-Kelly is
+        # the standard, far smoother than full-Kelly which is very swingy).
+        self.use_kelly = config.get("use_kelly_sizing", True)
+        self.kelly_fraction = config.get("kelly_fraction", 0.5)
 
     def calculate_position_size(
-        self, balance: float, price: float, atr: float, stop_loss: float = None
+        self, balance: float, price: float, atr: float, stop_loss: float = None,
+        win_prob: float = None, reward_risk: float = 2.0,
     ) -> float:
-        """ATR-based position sizing. Risks max_risk_pct of balance per trade."""
+        """
+        Position sizing. Always respects the max_risk_pct hard cap; when an ML
+        win-probability is supplied, the Kelly criterion sets how much of that
+        risk budget to actually deploy (sizing up only when the edge is real).
+        """
         investable = balance * (1 - self.cash_reserve)
         risk_dollars = balance * self.max_risk_pct
 
@@ -25,9 +34,28 @@ class RiskManager:
         if risk_per_unit <= 0:
             return 0.0
 
+        # Kelly scales the risk budget by edge quality. f* = p - (1-p)/b.
+        if self.use_kelly and win_prob is not None and reward_risk > 0:
+            edge = win_prob - (1 - win_prob) / reward_risk
+            kelly = max(0.0, min(edge * self.kelly_fraction, 1.0))
+            # Map full risk budget to Kelly; floor at 25% so a marginal-but-
+            # accepted trade still takes a small position rather than ~0.
+            risk_dollars *= max(kelly, 0.25) if edge > 0 else 0.25
+
         units = risk_dollars / risk_per_unit
         position_value = min(units * price, investable * 0.25)
         return round(position_value, 2)
+
+    def trailing_stop(self, side: str, extreme_price: float, atr: float) -> float:
+        """
+        New stop level trailing the best price seen. For a long it sits
+        atr*mult BELOW the highest price; for a short, above the lowest.
+        Caller only moves the stop in the favourable direction.
+        """
+        offset = atr * self.atr_stop_mult
+        if side == "buy":
+            return round(extreme_price - offset, 8)
+        return round(extreme_price + offset, 8)
 
     def can_open_position(self, open_trades: list, strategy: str, balance: float) -> bool:
         if len(open_trades) >= self.max_concurrent:

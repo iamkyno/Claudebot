@@ -363,6 +363,7 @@ const sym = s => { const [b,q] = s.split('/'); return `<span class="sym-cell"><b
 const dur = m => !m ? '--' : m<60 ? m+'m' : m<1440 ? Math.floor(m/60)+'h'+(m%60?m%60+'m':'') : Math.floor(m/1440)+'d'+(Math.floor((m%1440)/60)?Math.floor((m%1440)/60)+'h':'');
 const STAG = {rsi_bb:'RSI·BB',ema_cross:'EMA',funding_rate:'FUND',liquidation_cascade:'LIQ',grid:'GRID',pair_trading:'PAIR',scalp:'SCALP'};
 const stag = s => `<span class="stag st-${s}">${STAG[s]||s}</span>`;
+const sideChip = s => `<span class="${s==='sell'?'side-short':'side-long'}" style="font-size:9px;font-weight:700;letter-spacing:.04em">${s==='sell'?'SHORT':'LONG'}</span>`;
 const pnlChip = (v, suffix='') => v==null ? '<span class="dim">--</span>' :
   `<span class="pnl-chip ${v>=0?'g':'r'}">${v>=0?'▲':'▼'} ${suffix}</span>`;
 
@@ -474,7 +475,7 @@ async function loadOpen() {
   if (!trades.length) { b.innerHTML = '<tr><td colspan="12"><div class="empty-state">No open positions</div></td></tr>'; return; }
   b.innerHTML = trades.map((t,i) => `<tr>
     <td class="dim num">${i+1}</td>
-    <td>${sym(t.symbol)}</td>
+    <td>${sideChip(t.side)} ${sym(t.symbol)}</td>
     <td>${stag(t.strategy)}</td>
     <td class="r num">$${fp(t.entry_price)}</td>
     <td class="r num ${t.current_price==null?'dim':cls(t.unrealized_pnl)}">${t.current_price!=null ? '$'+fp(t.current_price) : '--'}</td>

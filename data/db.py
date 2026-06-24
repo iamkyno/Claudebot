@@ -17,6 +17,13 @@ _SCHEMA_PATH = Path(__file__).parent.parent / "schema" / "schema.sql"
 # Idempotent migrations applied on every startup (safe to re-run).
 _MIGRATIONS = [
     "ALTER TABLE signals ADD COLUMN IF NOT EXISTS tv_recommendation NUMERIC(5, 4)",
+    # Trailing stop + partial take-profit bookkeeping on trades.
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS highest_price NUMERIC(18, 8)",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS lowest_price NUMERIC(18, 8)",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS original_quantity NUMERIC(18, 8)",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS tp1_filled SMALLINT DEFAULT 0",
+    # Allow shorts: relax the side CHECK to nothing (validated in code instead).
+    "ALTER TABLE trades DROP CONSTRAINT IF EXISTS trades_side_check",
 ]
 
 

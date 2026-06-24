@@ -9,10 +9,11 @@ CREATE TABLE IF NOT EXISTS trades (
     id               BIGSERIAL PRIMARY KEY,
     symbol           VARCHAR(20)  NOT NULL,
     strategy         VARCHAR(50)  NOT NULL,
-    side             VARCHAR(4)   NOT NULL CHECK (side IN ('buy', 'sell')),
+    side             VARCHAR(4)   NOT NULL CHECK (side IN ('buy', 'sell')),  -- buy=long, sell=short
     entry_price      NUMERIC(18, 8) NOT NULL,
     exit_price       NUMERIC(18, 8),
     quantity         NUMERIC(18, 8) NOT NULL,
+    original_quantity NUMERIC(18, 8),       -- pre-partial-TP size
     pnl              NUMERIC(18, 8),
     pnl_pct          NUMERIC(10, 6),
     fees             NUMERIC(18, 8) DEFAULT 0,
@@ -21,6 +22,9 @@ CREATE TABLE IF NOT EXISTS trades (
     duration_minutes INT,
     stop_loss        NUMERIC(18, 8),
     take_profit      NUMERIC(18, 8),
+    highest_price    NUMERIC(18, 8),         -- best price seen (trailing stop, longs)
+    lowest_price     NUMERIC(18, 8),         -- best price seen (trailing stop, shorts)
+    tp1_filled       SMALLINT     DEFAULT 0, -- partial take-profit booked?
     status           VARCHAR(8)   NOT NULL DEFAULT 'open'
                        CHECK (status IN ('open', 'closed', 'stopped')),
     ml_confidence    NUMERIC(5, 4),

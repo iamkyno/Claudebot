@@ -69,12 +69,12 @@ class BacktestEngine:
 
             if open_trade is None:
                 signal = self.strategy.generate_signal(symbol, window)
-                if signal and signal.signal_type == "buy":
+                if signal and signal.signal_type in ("buy", "sell"):
                     position_value = balance * 0.10
                     quantity = position_value / price
                     balance -= position_value * self.commission
                     open_trade = BacktestTrade(
-                        symbol=symbol, strategy=self.strategy.name, side="buy",
+                        symbol=symbol, strategy=self.strategy.name, side=signal.signal_type,
                         entry_price=price, entry_idx=i, quantity=quantity,
                         stop_loss=signal.stop_loss, take_profit=signal.take_profit,
                     )
@@ -91,8 +91,10 @@ class BacktestEngine:
     def _close(self, trade: BacktestTrade, price: float, idx: int, balance: float) -> BacktestTrade:
         trade.exit_price = price
         trade.exit_idx = idx
-        trade.pnl = (price - trade.entry_price) * trade.quantity
-        trade.pnl_pct = (price - trade.entry_price) / trade.entry_price
+        # Side-aware PnL: longs profit when price rises, shorts when it falls.
+        direction = 1 if trade.side == "buy" else -1
+        trade.pnl = (price - trade.entry_price) * trade.quantity * direction
+        trade.pnl_pct = (price - trade.entry_price) / trade.entry_price * direction
         trade.status = "closed"
         return trade
 
@@ -139,3 +141,58 @@ class BacktestEngine:
         print(f" Max Drawdown: {result.max_drawdown:.2%}")
         print(f" Sharpe:       {result.sharpe_ratio:.2f}")
         print(f"{sep}\n")
+
+
+# ---------------------------------------------------------------------- #
+# CLI: backtest every strategy over a symbol so you can see — before risking
+# a cent — which strategies actually have an edge on real history.
+#   python -m backtest.engine --symbol BTC/USDT --timeframe 1h --limit 1500
+
+def _all_strategies(risk_cfg):
+    from strategies.rsi_bb import RSIBBStrategy
+    from strategies.ema_cross import EMACrossStrategy
+    from strategies.funding_rate import FundingRateStrategy
+    from strategies.grid import GridStrategy
+    from strategies.scalping import ScalpStrategy
+    return [
+        RSIBBStrategy(risk_cfg), EMACrossStrategy(risk_cfg),
+        FundingRateStrategy(risk_cfg), GridStrategy(risk_cfg),
+        ScalpStrategy(risk_cfg),
+    ]
+
+
+def main():
+    import argparse
+    logging.basicConfig(level=logging.WARNING)
+    ap = argparse.ArgumentParser(description="Claudebot strategy backtester")
+    ap.add_argument("--symbol", default="BTC/USDT")
+    ap.add_argument("--timeframe", default="1h")
+    ap.add_argument("--limit", type=int, default=1500)
+    args = ap.parse_args()
+
+    from config.settings import get_config
+    from exchange.client import BinanceClient
+    from data.fetcher import DataFetcher
+
+    cfg = get_config()
+    risk_cfg = cfg.get("risk", {})
+    df = DataFetcher(BinanceClient()).fetch_ohlcv(args.symbol, args.timeframe, limit=args.limit)
+    if df.empty:
+        print(f"No data for {args.symbol} {args.timeframe}")
+        return
+
+    print(f"\nBacktest {args.symbol} {args.timeframe}  ({len(df)} bars)\n")
+    hdr = f"{'strategy':<18}{'trades':>7}{'win%':>8}{'netPnL%':>10}{'maxDD%':>9}{'sharpe':>9}"
+    print(hdr); print("-" * len(hdr))
+    for strat in _all_strategies(risk_cfg):
+        try:
+            r = BacktestEngine(strat).run(args.symbol, df.copy())
+            print(f"{strat.name:<18}{r.total_trades:>7}{r.win_rate*100:>8.1f}"
+                  f"{r.total_pnl_pct*100:>10.2f}{r.max_drawdown*100:>9.2f}{r.sharpe_ratio:>9.2f}")
+        except Exception as e:
+            print(f"{strat.name:<18}  error: {e}")
+    print()
+
+
+if __name__ == "__main__":
+    main()

@@ -21,6 +21,23 @@ risk:
   max_positions_per_symbol: 2
   cash_reserve_pct: 0.20          # 20% always held as cash buffer
   atr_stop_multiplier: 1.5
+  use_kelly_sizing: true          # size by edge quality (ML win prob), capped by max_risk
+  kelly_fraction: 0.5             # half-Kelly — smoother than full-Kelly
+
+# Advanced engine features. Every one is independently switchable so you can
+# A/B them. All default ON.
+features:
+  websocket_prices: true          # live WS price feed (ms-fresh fills + trailing)
+  short_selling: true             # act on 'sell' signals (futures shorts)
+  trailing_stops: true            # ratchet stops toward price to lock gains
+  partial_take_profit: true       # bank a slice at TP1, move stop to breakeven
+  regime_filter: true             # only run a strategy in the regime it suits
+  mtf_confirmation: true          # gate entries on the higher timeframe trend
+  sentiment_filter: true          # fear&greed + aggregate funding crowd gate
+  sharpe_sizing: true             # allocate capital by rolling risk-adjusted perf
+  htf_timeframe: "4h"             # higher timeframe used for MTF confirmation
+  tp1_ratio: 0.5                  # TP1 triggers at this fraction of the way to TP
+  tp1_close_fraction: 0.5         # close this fraction of the position at TP1
 
 ml:
   min_trades_to_train: 50

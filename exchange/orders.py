@@ -9,37 +9,38 @@ logger = logging.getLogger(__name__)
 
 class OrderManager:
     def __init__(self, exchange_client, paper_mode: bool = False,
-                 paper_balance: float = 10_000.0):
+                 paper_balance: float = 10_000.0, price_stream=None):
         self.client = exchange_client
         self.paper_mode = paper_mode
+        self.price_stream = price_stream
         self._paper_counter = 1
         # Virtual wallet for paper trading so the bot actually trades with no keys.
         self._paper_cash = float(paper_balance)
         self._paper_start = float(paper_balance)
-        self._paper_positions: dict[int, float] = {}  # trade_id -> cost basis (USDT)
+        # trade_id -> {symbol, qty, cost, side, entry}
+        self._paper_positions: dict[int, dict] = {}
+
+    # -- pricing -------------------------------------------------------- #
+
+    def _current_price(self, symbol: str) -> float:
+        """Millisecond-fresh price from the WS stream if live, else REST."""
+        if self.price_stream is not None:
+            p = self.price_stream.get_price(symbol)
+            if p:
+                return float(p)
+        return float(self.client.fetch_ticker(symbol)["last"])
 
     # -- paper wallet --------------------------------------------------- #
 
     def reconcile_paper_wallet(self):
-        """
-        Rebuild the in-memory paper wallet from open trades in the DB.
-
-        The paper wallet is in-memory, but trades persist in the database.
-        Without this, restarting the bot would reset cash to the full starting
-        balance while old positions are still open — inflating equity and
-        creating phantom cash when those trades later close. Called once on
-        startup so a restart resumes exactly where it left off.
-        """
+        """Rebuild the in-memory paper wallet from open trades in the DB."""
         if not self.paper_mode:
             return
         session = get_session()
         try:
             rows = session.execute(text(
-                "SELECT id, symbol, entry_price, quantity FROM trades WHERE status='open'"
+                "SELECT id, symbol, side, entry_price, quantity FROM trades WHERE status='open'"
             )).fetchall()
-            # Realized PnL from already-closed trades must persist across
-            # restarts. Without it, cash resets to start-minus-deployed and
-            # every prior gain or loss silently vanishes from the wallet.
             realized = float(session.execute(text(
                 "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='closed'"
             )).scalar() or 0.0)
@@ -49,13 +50,13 @@ class OrderManager:
         self._paper_positions = {}
         deployed = 0.0
         for r in rows:
-            cost = float(r[2]) * float(r[3])
+            cost = float(r[3]) * float(r[4])
             self._paper_positions[int(r[0])] = {
-                "symbol": r[1], "qty": float(r[3]), "cost": cost
+                "symbol": r[1], "side": r[2], "entry": float(r[3]),
+                "qty": float(r[4]), "cost": cost,
             }
             deployed += cost
         self._paper_cash = max(self._paper_start + realized - deployed, 0.0)
-        # Keep the order counter ahead of any existing paper order ids.
         if rows:
             self._paper_counter = max(self._paper_counter, max(int(r[0]) for r in rows) + 1)
             logger.info(
@@ -65,33 +66,33 @@ class OrderManager:
             )
 
     def free_cash(self) -> float:
-        """Un-deployed USDT available to open new positions (paper mode)."""
         return self._paper_cash
 
     def equity(self) -> float:
-        """Cash + mark-to-market value of open positions."""
+        """Cash + mark-to-market value of open positions (side-aware)."""
         position_value = 0.0
         for pos in self._paper_positions.values():
             try:
-                ticker = self.client.fetch_ticker(pos["symbol"])
-                position_value += ticker["last"] * pos["qty"]
+                price = self._current_price(pos["symbol"])
             except Exception:
-                position_value += pos["cost"]  # fallback to cost basis
+                position_value += pos["cost"]
+                continue
+            # value = reserved margin (cost) + unrealized PnL
+            direction = 1 if pos["side"] == "buy" else -1
+            unreal = (price - pos["entry"]) * pos["qty"] * direction
+            position_value += pos["cost"] + unreal
         return self._paper_cash + position_value
 
-    def place_market_buy(
-        self,
-        symbol: str,
-        usdt_amount: float,
-        strategy: str,
-        stop_loss: float,
-        take_profit: float,
-        ml_confidence: float = None,
-        signal_id: int = None,
+    # -- opening -------------------------------------------------------- #
+
+    def open_position(
+        self, symbol: str, side: str, usdt_amount: float, strategy: str,
+        stop_loss: float, take_profit: float,
+        ml_confidence: float = None, signal_id: int = None,
     ) -> Optional[dict]:
+        """Open a long (side='buy') or short (side='sell') position."""
         try:
-            ticker = self.client.fetch_ticker(symbol)
-            price = ticker["last"]
+            price = self._current_price(symbol)
             quantity = usdt_amount / price
 
             min_qty = self.client.get_min_order_amount(symbol)
@@ -100,15 +101,16 @@ class OrderManager:
                 return None
 
             if self.paper_mode:
-                order = self._paper_order(symbol, "buy", quantity, price)
-                fill_price = price  # simulated fill at last
+                order = self._paper_order(symbol, side, quantity, price)
+                fill_price = price
             else:
-                order = self.client.create_market_order(symbol, "buy", quantity)
-                # Bug #2 fix: use actual exchange fill price, not the pre-order ticker
+                # Shorts route to the futures venue; longs to spot.
+                venue = self.client.futures if side == "sell" else self.client.spot
+                order = venue.create_market_order(symbol, side, quantity)
                 fill_price = float(order.get("average") or order.get("price") or price)
 
             trade_id = self._log_trade(
-                symbol, strategy, "buy", fill_price, quantity,
+                symbol, strategy, side, fill_price, quantity,
                 stop_loss, take_profit, ml_confidence, signal_id,
             )
 
@@ -116,73 +118,149 @@ class OrderManager:
                 cost = quantity * fill_price
                 self._paper_cash -= cost
                 self._paper_positions[trade_id] = {
-                    "symbol": symbol, "qty": quantity, "cost": cost
+                    "symbol": symbol, "side": side, "entry": fill_price,
+                    "qty": quantity, "cost": cost,
                 }
 
             prefix = "[PAPER] " if self.paper_mode else ""
-            logger.info(f"{prefix}BUY {quantity:.6f} {symbol} @ {fill_price:.4f} | {strategy}")
-            return {"order": order, "trade_id": trade_id, "price": fill_price, "quantity": quantity}
+            tag = "LONG" if side == "buy" else "SHORT"
+            logger.info(f"{prefix}{tag} {quantity:.6f} {symbol} @ {fill_price:.4f} | {strategy}")
+            return {"order": order, "trade_id": trade_id, "price": fill_price,
+                    "quantity": quantity, "side": side}
         except Exception as e:
-            logger.error(f"Buy order failed for {symbol}: {e}")
+            logger.error(f"Open {side} failed for {symbol}: {e}")
             return None
 
-    def place_market_sell(
-        self,
-        symbol: str,
-        quantity: float,
-        strategy: str,
-        trade_id: int = None,
-    ) -> Optional[dict]:
+    # Backwards-compatible long open.
+    def place_market_buy(self, symbol, usdt_amount, strategy, stop_loss,
+                         take_profit, ml_confidence=None, signal_id=None):
+        return self.open_position(symbol, "buy", usdt_amount, strategy,
+                                  stop_loss, take_profit, ml_confidence, signal_id)
+
+    # -- closing -------------------------------------------------------- #
+
+    def close_position(self, symbol: str, quantity: float, trade_id: int,
+                       side: str = "buy", fraction: float = 1.0) -> Optional[dict]:
+        """
+        Close (fraction<1 = partially close) a position. `side` is the side of
+        the OPEN position: a long is closed with a sell, a short with a buy.
+        """
         try:
-            ticker = self.client.fetch_ticker(symbol)
-            price = ticker["last"]
+            price = self._current_price(symbol)
+            close_side = "sell" if side == "buy" else "buy"
+            close_qty = quantity * fraction
 
             if self.paper_mode:
-                order = self._paper_order(symbol, "sell", quantity, price)
+                order = self._paper_order(symbol, close_side, close_qty, price)
                 fill_price = price
             else:
-                order = self.client.create_market_order(symbol, "sell", quantity)
+                venue = self.client.futures if side == "sell" else self.client.spot
+                order = venue.create_market_order(symbol, close_side, close_qty)
                 fill_price = float(order.get("average") or order.get("price") or price)
 
-            # Bug #3 fix: commit DB first; only update in-memory wallet on success
-            # to prevent phantom cash from a failed DB write on restart reconciliation.
-            close_ok = self._close_trade(trade_id, fill_price) if trade_id else True
+            if fraction >= 1.0:
+                close_ok = self._close_trade(trade_id, fill_price)
+            else:
+                close_ok = self._partial_close(trade_id, fill_price, close_qty)
 
             if self.paper_mode and close_ok:
-                self._paper_cash += quantity * fill_price
-                self._paper_positions.pop(trade_id, None)
+                self._settle_paper(trade_id, fill_price, close_qty, side, fraction)
 
             prefix = "[PAPER] " if self.paper_mode else ""
-            logger.info(f"{prefix}SELL {quantity:.6f} {symbol} @ {fill_price:.4f}")
-            return {"order": order, "price": fill_price, "quantity": quantity}
+            tag = "CLOSE" if fraction >= 1.0 else f"TRIM {fraction:.0%}"
+            logger.info(f"{prefix}{tag} {close_qty:.6f} {symbol} @ {fill_price:.4f}")
+            return {"order": order, "price": fill_price, "quantity": close_qty}
         except Exception as e:
-            logger.error(f"Sell order failed for {symbol}: {e}")
+            logger.error(f"Close failed for {symbol}: {e}")
             return None
+
+    # Backwards-compatible full close of a long.
+    def place_market_sell(self, symbol, quantity, strategy, trade_id=None):
+        return self.close_position(symbol, quantity, trade_id, side="buy", fraction=1.0)
+
+    def _settle_paper(self, trade_id, fill_price, close_qty, side, fraction):
+        pos = self._paper_positions.get(trade_id)
+        if not pos:
+            return
+        entry = pos["entry"]
+        direction = 1 if side == "buy" else -1
+        realized = (fill_price - entry) * close_qty * direction
+        released_margin = entry * close_qty
+        self._paper_cash += released_margin + realized
+        if fraction >= 1.0:
+            self._paper_positions.pop(trade_id, None)
+        else:
+            pos["qty"] -= close_qty
+            pos["cost"] -= released_margin
+
+    # -- trailing stop -------------------------------------------------- #
+
+    def update_stop(self, trade_id: int, new_stop: float):
+        session = get_session()
+        try:
+            session.execute(
+                text("UPDATE trades SET stop_loss=:s WHERE id=:id AND status='open'"),
+                {"s": new_stop, "id": trade_id},
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.debug(f"Stop update failed for {trade_id}: {e}")
+        finally:
+            session.close()
+
+    def record_high_low(self, trade_id: int, highest: float = None, lowest: float = None):
+        """Persist the best price seen so the trailing stop survives restarts."""
+        sets, params = [], {"id": trade_id}
+        if highest is not None:
+            sets.append("highest_price=:h"); params["h"] = highest
+        if lowest is not None:
+            sets.append("lowest_price=:l"); params["l"] = lowest
+        if not sets:
+            return
+        session = get_session()
+        try:
+            session.execute(
+                text(f"UPDATE trades SET {', '.join(sets)} WHERE id=:id AND status='open'"),
+                params,
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.debug(f"High/low update failed for {trade_id}: {e}")
+        finally:
+            session.close()
+
+    # -- queries -------------------------------------------------------- #
 
     def get_open_trades(self) -> list:
         session = get_session()
         try:
-            result = session.execute(text("SELECT * FROM trades WHERE status='open'"))
-            return result.fetchall()
+            return session.execute(text("SELECT * FROM trades WHERE status='open'")).fetchall()
         finally:
             session.close()
+
+    # -- internals ------------------------------------------------------ #
 
     def _paper_order(self, symbol: str, side: str, amount: float, price: float) -> dict:
         oid = f"paper_{self._paper_counter}"
         self._paper_counter += 1
-        return {"id": oid, "symbol": symbol, "side": side, "amount": amount, "price": price, "status": "closed"}
+        return {"id": oid, "symbol": symbol, "side": side, "amount": amount,
+                "price": price, "status": "closed"}
 
     def _log_trade(self, symbol, strategy, side, entry_price, quantity,
-                    stop_loss, take_profit, ml_confidence, signal_id) -> Optional[int]:
+                   stop_loss, take_profit, ml_confidence, signal_id) -> Optional[int]:
         session = get_session()
         try:
             result = session.execute(text("""
                 INSERT INTO trades
-                    (symbol, strategy, side, entry_price, quantity,
-                     stop_loss, take_profit, ml_confidence, signal_id, entry_time, status)
+                    (symbol, strategy, side, entry_price, quantity, original_quantity,
+                     stop_loss, take_profit, highest_price, lowest_price,
+                     ml_confidence, signal_id, entry_time, status)
                 VALUES
-                    (:symbol, :strategy, :side, :entry_price, :quantity,
-                     :stop_loss, :take_profit, :ml_confidence, :signal_id, :entry_time, 'open')
+                    (:symbol, :strategy, :side, :entry_price, :quantity, :quantity,
+                     :stop_loss, :take_profit, :entry_price, :entry_price,
+                     :ml_confidence, :signal_id, :entry_time, 'open')
                 RETURNING id
             """), {
                 "symbol": symbol, "strategy": strategy, "side": side,
@@ -212,8 +290,9 @@ class OrderManager:
 
             entry = float(trade.entry_price)
             qty = float(trade.quantity)
-            pnl = (exit_price - entry) * qty
-            pnl_pct = (exit_price - entry) / entry
+            direction = 1 if trade.side == "buy" else -1
+            pnl = (exit_price - entry) * qty * direction
+            pnl_pct = (exit_price - entry) / entry * direction
             exit_time = datetime.utcnow()
             duration = int((exit_time - trade.entry_time).total_seconds() / 60)
 
@@ -233,13 +312,71 @@ class OrderManager:
                     UPDATE signals
                     SET outcome=:outcome, actual_pnl_pct=:pnl_pct, trade_id=:trade_id
                     WHERE id=:signal_id
-                """), {"outcome": outcome, "pnl_pct": pnl_pct, "trade_id": trade_id, "signal_id": trade.signal_id})
+                """), {"outcome": outcome, "pnl_pct": pnl_pct, "trade_id": trade_id,
+                       "signal_id": trade.signal_id})
 
             session.commit()
             return True
         except Exception as e:
             session.rollback()
             logger.error(f"Failed to close trade {trade_id}: {e}")
+            return False
+        finally:
+            session.close()
+
+    def _partial_close(self, trade_id: int, exit_price: float, close_qty: float) -> bool:
+        """
+        Realize PnL on part of a position: book a child closed-trade row for the
+        slice that was sold and shrink the parent's open quantity. Keeps the
+        rest of the position running with its stop moved to breakeven (TP1).
+        """
+        session = get_session()
+        try:
+            trade = session.execute(
+                text("SELECT * FROM trades WHERE id=:id"), {"id": trade_id}
+            ).fetchone()
+            if not trade or float(trade.quantity) <= close_qty:
+                # Nothing sensible to partially close — fall back to full close.
+                session.close()
+                return self._close_trade(trade_id, exit_price)
+
+            entry = float(trade.entry_price)
+            direction = 1 if trade.side == "buy" else -1
+            pnl = (exit_price - entry) * close_qty * direction
+            pnl_pct = (exit_price - entry) / entry * direction
+            now = datetime.utcnow()
+            duration = int((now - trade.entry_time).total_seconds() / 60)
+
+            # Child closed row for the realized slice.
+            session.execute(text("""
+                INSERT INTO trades
+                    (symbol, strategy, side, entry_price, exit_price, quantity,
+                     pnl, pnl_pct, entry_time, exit_time, duration_minutes,
+                     stop_loss, take_profit, status, notes)
+                VALUES
+                    (:symbol, :strategy, :side, :entry, :exit, :qty,
+                     :pnl, :pnl_pct, :entry_time, :exit_time, :duration,
+                     :stop, :tp, 'closed', 'partial TP1')
+            """), {
+                "symbol": trade.symbol, "strategy": trade.strategy, "side": trade.side,
+                "entry": entry, "exit": exit_price, "qty": close_qty,
+                "pnl": pnl, "pnl_pct": pnl_pct, "entry_time": trade.entry_time,
+                "exit_time": now, "duration": duration,
+                "stop": trade.stop_loss, "tp": trade.take_profit,
+            })
+
+            # Shrink the parent, move stop to breakeven, mark TP1 filled.
+            session.execute(text("""
+                UPDATE trades
+                SET quantity = quantity - :cq, stop_loss = :be, tp1_filled = 1
+                WHERE id = :id
+            """), {"cq": close_qty, "be": entry, "id": trade_id})
+
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Partial close failed for {trade_id}: {e}")
             return False
         finally:
             session.close()

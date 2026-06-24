@@ -47,12 +47,18 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df["roc"] = ta.momentum.ROCIndicator(df["close"], window=12).roc()
 
     # VWAP resets at midnight UTC each day so scalpers get a true intraday mean.
+    # Falls back to a single running VWAP when the index isn't time-based
+    # (e.g. inside the backtester, which uses a positional index).
     typical = (df["high"] + df["low"] + df["close"]) / 3
-    dates = df.index.normalize()
-    df["vwap"] = (
-        (typical * df["volume"]).groupby(dates).cumsum()
-        / df["volume"].groupby(dates).cumsum().replace(0, np.nan)
-    )
+    if isinstance(df.index, pd.DatetimeIndex):
+        dates = df.index.normalize()
+        df["vwap"] = (
+            (typical * df["volume"]).groupby(dates).cumsum()
+            / df["volume"].groupby(dates).cumsum().replace(0, np.nan)
+        )
+    else:
+        cum_vol = df["volume"].cumsum().replace(0, np.nan)
+        df["vwap"] = (typical * df["volume"]).cumsum() / cum_vol
 
     return df
 
