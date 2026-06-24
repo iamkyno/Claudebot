@@ -59,6 +59,7 @@ class DataFetcher:
             if not rows:
                 return pd.DataFrame()
             df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df[["open","high","low","close","volume"]] = df[["open","high","low","close","volume"]].astype(float)
             df.set_index("timestamp", inplace=True)
             return df.sort_index()
         finally:

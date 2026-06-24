@@ -34,17 +34,25 @@ class BinanceClient:
         api_secret = secrets["binance"]["api_secret"]
         self.has_keys = bool(api_key and api_secret)
 
-        params = {"enableRateLimit": True}
+        auth_params = {"enableRateLimit": True}
         if self.has_keys:
-            params["apiKey"] = api_key
-            params["secret"] = api_secret
+            auth_params["apiKey"] = api_key
+            auth_params["secret"] = api_secret
         else:
             # Public-data-only mode — enough for paper trading and backtests.
             logger.info("No Binance API keys found — running in public-data mode "
                         "(paper trading only).")
 
-        self.spot = ccxt.binance({**params, "options": {"defaultType": "spot"}})
-        self.futures = ccxt.binance({**params, "options": {"defaultType": "future"}})
+        # Authenticated instances (order placement, balance)
+        self.spot    = ccxt.binance({**auth_params, "options": {"defaultType": "spot"}})
+        self.futures = ccxt.binance({**auth_params, "options": {"defaultType": "future"}})
+
+        # Keyless instance for public market data (OHLCV, tickers, orderbook).
+        # When API keys have IP restrictions, Binance rejects the request even
+        # on public endpoints if the authenticated key header is included — so
+        # we strip the key for all read-only market-data calls.
+        pub = {"enableRateLimit": True}
+        self.public = ccxt.binance({**pub, "options": {"defaultType": "spot"}})
 
         if self.config.get("binance", {}).get("testnet"):
             self.spot.set_sandbox_mode(True)
@@ -52,11 +60,11 @@ class BinanceClient:
 
     @retry()
     def fetch_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 500):
-        return self.spot.fetch_ohlcv(symbol, timeframe, limit=limit)
+        return self.public.fetch_ohlcv(symbol, timeframe, limit=limit)
 
     @retry()
     def fetch_ticker(self, symbol: str):
-        return self.spot.fetch_ticker(symbol)
+        return self.public.fetch_ticker(symbol)
 
     @retry()
     def fetch_balance(self):
@@ -66,7 +74,7 @@ class BinanceClient:
 
     @retry()
     def fetch_orderbook(self, symbol: str, limit: int = 20):
-        return self.spot.fetch_order_book(symbol, limit=limit)
+        return self.public.fetch_order_book(symbol, limit=limit)
 
     @retry()
     def create_market_order(self, symbol: str, side: str, amount: float):
@@ -93,7 +101,7 @@ class BinanceClient:
         return self.futures.fetch_funding_rate(symbol)
 
     def get_symbol_info(self, symbol: str):
-        markets = self.spot.load_markets()
+        markets = self.public.load_markets()
         return markets.get(symbol)
 
     def get_min_order_amount(self, symbol: str) -> float:
