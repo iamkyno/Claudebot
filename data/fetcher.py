@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 import pandas as pd
 from datetime import datetime
 from sqlalchemy import text
@@ -10,25 +12,39 @@ logger = logging.getLogger(__name__)
 class DataFetcher:
     def __init__(self, exchange_client):
         self.exchange = exchange_client
+        # Short-lived in-memory cache so the sniper loop can re-read the same
+        # candles every few seconds without re-hitting the network.
+        self._mem: dict[tuple, tuple[float, pd.DataFrame]] = {}
+        self._mem_lock = threading.Lock()
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 500) -> pd.DataFrame:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 500,
+                    mem_ttl: float = 0.0, cache_tail: int = 120) -> pd.DataFrame:
+        key = (symbol, timeframe, limit)
+        if mem_ttl > 0:
+            with self._mem_lock:
+                hit = self._mem.get(key)
+            if hit and (time.time() - hit[0]) < mem_ttl:
+                return hit[1]
         try:
             raw = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
             df.set_index("timestamp", inplace=True)
-            self._cache(symbol, timeframe, df)
+            if mem_ttl > 0:
+                with self._mem_lock:
+                    self._mem[key] = (time.time(), df)
+            self._cache(symbol, timeframe, df, tail=cache_tail)
             return df
         except Exception as e:
             logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
             return self._load_from_cache(symbol, timeframe, limit)
 
-    def _cache(self, symbol: str, timeframe: str, df: pd.DataFrame):
+    def _cache(self, symbol: str, timeframe: str, df: pd.DataFrame, tail: int = 120):
         # Only upsert the most recent candles: caching 500 rows per symbol per
         # tick is ~30k writes/min across the universe for data that's already
-        # there. 120 rows keeps the offline fallback deep enough (>2x the 60-
-        # bar minimum every consumer requires) at a fraction of the DB load.
-        df = df.tail(120)
+        # there. The tail keeps the offline fallback deep enough while the
+        # high-frequency scalp loop passes a much smaller tail (fresh bars only).
+        df = df.tail(tail)
         session = get_session()
         try:
             for ts, row in df.iterrows():

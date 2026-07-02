@@ -75,6 +75,9 @@ scalp:
   max_symbols: 8             # only scalp the most liquid pairs
   taker_fee_rate: 0.0005     # 0.05% per side (futures). Spot is ~0.001
   scalp_time_stop_min: 15    # cut a scalp that hasn't worked in N minutes
+  sniper_mode: true          # dedicated fast loop, independent of the 60s tick
+  exit_check_seconds: 3      # bracket/trailing checked off the live WS price
+  entry_scan_seconds: 20     # setup scans per fresh 1m data (3x per candle)
 
 bot:
   loop_interval_seconds: 60

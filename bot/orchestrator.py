@@ -23,6 +23,7 @@ from risk.guards import RiskGuards
 from ml.trainer import ModelTrainer
 from ml.predictor import SignalPredictor
 from bot.notifier import Notifier
+from bot.scalp_engine import ScalpEngine
 from strategies.rsi_bb import RSIBBStrategy
 from strategies.ema_cross import EMACrossStrategy
 from strategies.funding_rate import FundingRateStrategy
@@ -145,6 +146,21 @@ class Orchestrator:
         self._liq_feed = LiquidationFeed()
         self._liq_feed.start()
 
+        # Sniper mode: scalps get their own fast loop (exits every few seconds
+        # off the WS price, entry scans several times per 1m candle) instead
+        # of waiting for this 60s tick. Falls back to in-tick scalping if off.
+        sniper = cfg.get("scalp", {}).get("sniper_mode", True)
+        self.scalp_engine = None
+        if self.scalper and sniper:
+            self.scalp_engine = ScalpEngine(
+                fetcher=self.fetcher, exchange=self.exchange, orders=self.orders,
+                risk=self.risk, guards=self.guards, predictor=self.predictor,
+                scalper=self.scalper, price_stream=self.price_stream,
+                tv=self.tv, notifier=self.notifier, cfg=cfg,
+                get_symbols=lambda: self.symbols,
+            )
+            self.scalp_engine.start()
+
     # ------------------------------------------------------------------ #
 
     def run(self):
@@ -161,6 +177,8 @@ class Orchestrator:
             except KeyboardInterrupt:
                 logger.info("Stopped by user")
                 self._liq_feed.stop()
+                if self.scalp_engine:
+                    self.scalp_engine.stop()
                 if self.price_stream:
                     self.price_stream.stop()
                 break
@@ -195,7 +213,13 @@ class Orchestrator:
         self._sent_snapshot = self.sentiment.snapshot() if self.sentiment else None
 
         open_trades = self.orders.get_open_trades()
-        self._check_exits(open_trades)
+        # Sniper mode owns scalp exits (checked every few seconds in its own
+        # loop) — this tick must not double-close them.
+        if self.scalp_engine:
+            self._check_exits([t for t in open_trades if t.strategy != "scalp"])
+            self._trades_since_retrain += self.scalp_engine.drain_trade_events()
+        else:
+            self._check_exits(open_trades)
 
         # Fan out all per-symbol I/O (OHLCV, HTF frame, funding, book, TV) in
         # parallel, then take decisions sequentially so the wallet math stays
@@ -213,8 +237,9 @@ class Orchestrator:
 
         self._process_pairs(equity, free, open_trades)
 
-        # Fast-timeframe scalping pass on the most liquid pairs.
-        if self.scalper:
+        # Fast-timeframe scalping pass — only when the sniper engine is off
+        # (otherwise it owns scalp entries on its own faster cadence).
+        if self.scalper and not self.scalp_engine:
             self._process_scalps(equity)
 
         if self._trades_since_retrain >= self._retrain_every:

@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import text
@@ -26,6 +27,9 @@ class OrderManager:
         self._paper_start = float(paper_balance)
         # trade_id -> {symbol, qty, cost, side, entry, entry_fee}
         self._paper_positions: dict[int, dict] = {}
+        # The swing tick and the sniper scalp loop trade concurrently — every
+        # wallet mutation goes through this lock so cash math can't interleave.
+        self._lock = threading.RLock()
 
     # -- cost model ------------------------------------------------------ #
 
@@ -88,12 +92,16 @@ class OrderManager:
             )
 
     def free_cash(self) -> float:
-        return self._paper_cash
+        with self._lock:
+            return self._paper_cash
 
     def equity(self) -> float:
         """Cash + mark-to-market value of open positions (side-aware)."""
+        with self._lock:
+            cash = self._paper_cash
+            positions = list(self._paper_positions.values())
         position_value = 0.0
-        for pos in self._paper_positions.values():
+        for pos in positions:
             try:
                 price = self._current_price(pos["symbol"])
             except Exception:
@@ -102,7 +110,7 @@ class OrderManager:
             direction = 1 if pos["side"] == "buy" else -1
             unreal = (price - pos["entry"]) * pos["qty"] * direction
             position_value += pos["cost"] + unreal
-        return self._paper_cash + position_value
+        return cash + position_value
 
     # -- opening -------------------------------------------------------- #
 
@@ -142,11 +150,12 @@ class OrderManager:
 
             if self.paper_mode and trade_id:
                 cost = quantity * fill_price
-                self._paper_cash -= cost + entry_fee
-                self._paper_positions[trade_id] = {
-                    "symbol": symbol, "side": side, "entry": fill_price,
-                    "qty": quantity, "cost": cost, "entry_fee": entry_fee,
-                }
+                with self._lock:
+                    self._paper_cash -= cost + entry_fee
+                    self._paper_positions[trade_id] = {
+                        "symbol": symbol, "side": side, "entry": fill_price,
+                        "qty": quantity, "cost": cost, "entry_fee": entry_fee,
+                    }
 
             prefix = "[PAPER] " if self.paper_mode else ""
             tag = "LONG" if side == "buy" else "SHORT"
@@ -216,21 +225,22 @@ class OrderManager:
         cash change == gross - entry_fee - exit_fee == net PnL. Entry fee was
         already paid at open, so it is NOT deducted again here.
         """
-        pos = self._paper_positions.get(trade_id)
-        if not pos:
-            return
-        entry = pos["entry"]
-        direction = 1 if side == "buy" else -1
-        gross = (fill_price - entry) * close_qty * direction
-        exit_fee = fill_price * close_qty * rate
-        released_margin = entry * close_qty
-        self._paper_cash += released_margin + gross - exit_fee
-        if fraction >= 1.0:
-            self._paper_positions.pop(trade_id, None)
-        else:
-            pos["qty"] -= close_qty
-            pos["cost"] -= released_margin
-            pos["entry_fee"] *= (1 - fraction)
+        with self._lock:
+            pos = self._paper_positions.get(trade_id)
+            if not pos:
+                return
+            entry = pos["entry"]
+            direction = 1 if side == "buy" else -1
+            gross = (fill_price - entry) * close_qty * direction
+            exit_fee = fill_price * close_qty * rate
+            released_margin = entry * close_qty
+            self._paper_cash += released_margin + gross - exit_fee
+            if fraction >= 1.0:
+                self._paper_positions.pop(trade_id, None)
+            else:
+                pos["qty"] -= close_qty
+                pos["cost"] -= released_margin
+                pos["entry_fee"] *= (1 - fraction)
 
     # -- trailing stop -------------------------------------------------- #
 
