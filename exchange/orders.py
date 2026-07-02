@@ -91,6 +91,16 @@ class OrderManager:
                 f"${self._paper_cash:,.2f} cash free"
             )
 
+    def reset_paper_wallet(self):
+        """Fresh start: full starting balance, no positions. Paper mode only —
+        callers are expected to have wiped/closed the DB trades first."""
+        if not self.paper_mode:
+            return
+        with self._lock:
+            self._paper_cash = self._paper_start
+            self._paper_positions = {}
+        logger.info(f"[PAPER] Wallet reset to ${self._paper_start:,.2f}")
+
     def free_cash(self) -> float:
         with self._lock:
             return self._paper_cash

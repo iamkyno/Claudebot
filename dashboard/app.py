@@ -1,21 +1,51 @@
 import logging
+import re
 import threading
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 
 from data.db import get_session
-from config.settings import get_config
+from config.settings import get_config, has_binance_keys
+
+_CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.yaml"
 
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 app = FastAPI(title="Claudebot", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+
+# The dashboard runs as a thread inside the bot process; the orchestrator
+# registers itself here so control endpoints can drive the live wallet.
+_BOT = {"orchestrator": None}
+
+
+def register_bot(orchestrator):
+    _BOT["orchestrator"] = orchestrator
+
+
+def _runtime_mode(cfg) -> str:
+    orch = _BOT.get("orchestrator")
+    if orch is not None:
+        return "PAPER" if orch.paper_mode else "LIVE"
+    return "PAPER" if cfg["bot"].get("paper_mode", True) else "LIVE"
+
+
+def _paper_guard():
+    """Control endpoints are paper-mode only — never touch a live account.
+    Checks the RUNNING bot's mode, not just the config file."""
+    orch = _BOT.get("orchestrator")
+    if orch is not None and not orch.paper_mode:
+        return "Refused: bot is running in LIVE mode"
+    cfg = get_config()
+    if orch is None and not cfg["bot"].get("paper_mode", True):
+        return "Refused: bot is configured LIVE"
+    return None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -88,7 +118,11 @@ async def summary():
             "closed_trades": closed,
             "open_positions": open_count,
             "win_rate":      round(wins / closed * 100, 1) if closed > 0 else 0.0,
-            "mode":          "PAPER" if cfg["bot"].get("paper_mode", True) else "LIVE",
+            # Runtime mode = what the running bot is actually doing;
+            # configured mode = what config.yaml says (differs after a toggle
+            # until the bot restarts).
+            "mode":          _runtime_mode(cfg),
+            "configured_mode": "PAPER" if cfg["bot"].get("paper_mode", True) else "LIVE",
             "ml": {
                 "version":   ml_row[0] if ml_row else None,
                 "accuracy":  round(float(ml_row[1]) * 100, 1) if ml_row and ml_row[1] else None,
@@ -252,6 +286,96 @@ async def recent_liquidations(limit: int = 20):
         ]
     finally:
         session.close()
+
+
+@app.post("/api/paper/close_all")
+async def close_all_paper():
+    """Flatten every open position at the current price (PnL realized honestly,
+    fees and slippage included). Paper mode only."""
+    err = _paper_guard()
+    if err:
+        return {"ok": False, "error": err}
+    orch = _BOT["orchestrator"]
+    if orch is None:
+        return {"ok": False, "error": "Bot not connected yet — try again in a few seconds"}
+
+    closed, failed = 0, 0
+    for t in orch.orders.get_open_trades():
+        r = orch.orders.close_position(
+            t.symbol, float(t.quantity), t.id, side=(t.side or "buy"), fraction=1.0
+        )
+        if r:
+            closed += 1
+        else:
+            failed += 1
+    logger.info(f"[DASHBOARD] Close-all: {closed} closed, {failed} failed")
+    return {"ok": True, "closed": closed, "failed": failed}
+
+
+@app.post("/api/paper/reset")
+async def reset_paper():
+    """Full paper reset: wipe trades + signals, deactivate old ML models,
+    restore the wallet to its starting balance. Paper mode only."""
+    err = _paper_guard()
+    if err:
+        return {"ok": False, "error": err}
+
+    session = get_session()
+    try:
+        session.execute(text("DELETE FROM signals"))
+        session.execute(text("DELETE FROM trades"))
+        # Old models were trained on the wiped history — retire them so both
+        # classes restart in bootstrap mode and learn from clean data.
+        session.execute(text("UPDATE ml_models SET is_active=0"))
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Paper reset failed: {e}")
+        return {"ok": False, "error": str(e)}
+    finally:
+        session.close()
+
+    orch = _BOT["orchestrator"]
+    if orch is not None:
+        orch.orders.reset_paper_wallet()
+        orch.guards.reset_daily()
+        orch.guards.set_starting_balance(orch.orders.equity())
+        orch.predictor.unload()
+    logger.info("[DASHBOARD] Paper reset complete — fresh wallet, clean history")
+    return {"ok": True}
+
+
+@app.post("/api/mode")
+async def set_mode(payload: dict = Body(...)):
+    """
+    Toggle paper/live in config.yaml. Takes effect on RESTART — the wallet
+    model and order routing are fixed at startup, so hot-flipping mid-run
+    would strand open paper positions inside a live engine.
+    Uses a targeted line edit so the config's comments are preserved.
+    """
+    mode = str(payload.get("mode", "")).lower()
+    if mode not in ("paper", "live"):
+        return {"ok": False, "error": "mode must be 'paper' or 'live'"}
+
+    warning = None
+    if mode == "live" and not has_binance_keys():
+        return {"ok": False, "error": "No Binance API keys configured — "
+                "add them to config/secrets.yaml or .env before going live"}
+
+    try:
+        text_cfg = _CONFIG_PATH.read_text(encoding="utf-8")
+        new_val = "true" if mode == "paper" else "false"
+        updated, n = re.subn(r"(paper_mode:\s*)(true|false)",
+                             rf"\g<1>{new_val}", text_cfg, count=1)
+        if n == 0:
+            return {"ok": False, "error": "paper_mode key not found in config.yaml"}
+        _CONFIG_PATH.write_text(updated, encoding="utf-8")
+    except Exception as e:
+        return {"ok": False, "error": f"Could not update config: {e}"}
+
+    logger.warning(f"[DASHBOARD] Trading mode set to {mode.upper()} — restart required")
+    return {"ok": True, "configured_mode": mode.upper(),
+            "restart_required": True, "warning": warning}
 
 
 def start_dashboard(host: str = "0.0.0.0", port: int = 8080):

@@ -65,7 +65,10 @@ body { background: var(--bg); color: var(--t1); font-family: var(--sans); font-s
   padding: 3px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: .03em;
 }
 .p-paper { background: var(--am2); color: var(--am); }
-.p-live  { background: var(--g2);  color: var(--g); }
+.p-live  { background: var(--r2);  color: var(--r); }
+#mode-pill { cursor: pointer; border: 1px solid transparent; }
+#mode-pill:hover { border-color: currentColor; }
+#mode-pill.pending { outline: 1px dashed currentColor; outline-offset: 2px; }
 .p-ml    { background: var(--b-dim); color: var(--b); }
 .p-ml.warn { background: var(--am2); color: var(--am); }
 .led { width: 6px; height: 6px; border-radius: 50%; background: var(--g); animation: blink 2s infinite; }
@@ -81,9 +84,25 @@ body { background: var(--bg); color: var(--t1); font-family: var(--sans); font-s
 .tbs .lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--t3); line-height: 1; margin-bottom: 3px; }
 .tbs .val { font-family: var(--mono); font-size: 13px; font-weight: 600; line-height: 1; }
 
+.tb-actions {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 14px; margin-left: auto;
+  border-left: 1px solid var(--b1);
+}
+.tbtn {
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .07em;
+  padding: 5px 11px; border-radius: 4px; cursor: pointer;
+  background: transparent; transition: background .15s ease, color .15s ease;
+}
+.tbtn.warn   { color: var(--am); border: 1px solid rgba(245,166,35,.35); }
+.tbtn.warn:hover   { background: var(--am2); }
+.tbtn.danger { color: var(--r); border: 1px solid rgba(240,75,96,.35); }
+.tbtn.danger:hover { background: var(--r2); }
+.tbtn:disabled { opacity: .4; cursor: wait; }
+
 .tb-clock {
   display: flex; align-items: center;
-  padding: 0 16px; margin-left: auto;
+  padding: 0 16px;
   font-family: var(--mono); font-size: 12px; color: var(--t2);
   border-left: 1px solid var(--b1);
 }
@@ -257,6 +276,10 @@ td.c { text-align: center; }
       <div class="val" id="tb-dep">$--</div>
     </div>
   </div>
+  <div class="tb-actions">
+    <button id="btn-close-all" class="tbtn warn" title="Close every open position at the current price">CLOSE ALL</button>
+    <button id="btn-reset" class="tbtn danger" title="Wipe trade history and restore the starting paper balance">RESET</button>
+  </div>
   <div class="tb-clock" id="clock">--:--:--</div>
 </div>
 
@@ -418,8 +441,15 @@ async function loadSummary() {
   $('tb-counts').innerHTML = `<span class="num">${d.open_positions} / ${d.closed_trades}</span>`;
 
   const mp = $('mode-pill');
-  mp.textContent = d.mode;
-  mp.className = 'pill ' + (d.mode==='PAPER' ? 'p-paper' : 'p-live');
+  window._runtimeMode = d.mode;
+  if (d.configured_mode && d.configured_mode !== d.mode) {
+    mp.textContent = `${d.mode} → ${d.configured_mode} on restart`;
+    mp.className = 'pill pending ' + (d.mode==='PAPER' ? 'p-paper' : 'p-live');
+  } else {
+    mp.textContent = d.mode;
+    mp.className = 'pill ' + (d.mode==='PAPER' ? 'p-paper' : 'p-live');
+  }
+  mp.title = 'Click to toggle paper/live (applies on restart)';
 
   const mlp = $('ml-pill');
   if (d.ml.version) {
@@ -526,6 +556,42 @@ async function refresh() {
   try { await Promise.all([loadSummary(),loadChart(),loadStrategies(),loadOpen(),loadClosed(),loadLiq()]); }
   catch(e) { console.warn('refresh error',e); }
 }
+
+// ── Paper controls ────────────────────────────────────────────
+async function paperAction(btn, url, confirmMsg) {
+  if (!confirm(confirmMsg)) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(url, { method: 'POST' }).then(r => r.json());
+    if (!res.ok) { alert('Failed: ' + (res.error || 'unknown error')); }
+    else if (res.closed !== undefined) { console.log(`Closed ${res.closed}, failed ${res.failed}`); }
+    await refresh();
+  } catch (e) { alert('Request failed: ' + e); }
+  finally { btn.disabled = false; }
+}
+$('btn-close-all').onclick = () => paperAction($('btn-close-all'), '/api/paper/close_all',
+  'Close ALL open positions at current market price?');
+
+// ── Paper/Live toggle (applies on restart) ────────────────────
+$('mode-pill').onclick = async () => {
+  const cur = window._runtimeMode || 'PAPER';
+  const target = cur === 'PAPER' ? 'live' : 'paper';
+  const msg = target === 'live'
+    ? '⚠️ Switch to LIVE trading?\n\nThe bot will place REAL orders with REAL money on your Binance account after the next restart.\n\nMake sure:\n• API keys have spot trading enabled\n• Your IP is whitelisted (or IP restriction is off)\n• You are comfortable losing what is on the account\n\nProceed?'
+    : 'Switch back to PAPER trading (applies on restart)?';
+  if (!confirm(msg)) return;
+  try {
+    const res = await fetch('/api/mode', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: target}),
+    }).then(r => r.json());
+    if (!res.ok) { alert('Failed: ' + (res.error || 'unknown')); return; }
+    alert(`Mode set to ${res.configured_mode}. Restart the bot to apply.`);
+    await refresh();
+  } catch (e) { alert('Request failed: ' + e); }
+};
+$('btn-reset').onclick = () => paperAction($('btn-reset'), '/api/paper/reset',
+  'RESET paper account?\n\nThis wipes all trade history and signals, retires old ML models, and restores the starting balance. This cannot be undone.');
 
 setInterval(() => $('clock').textContent = new Date().toLocaleTimeString(), 1000);
 refresh();

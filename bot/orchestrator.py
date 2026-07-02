@@ -161,6 +161,14 @@ class Orchestrator:
             )
             self.scalp_engine.start()
 
+        # Let the dashboard's control endpoints (close-all / paper reset)
+        # drive this bot instance. Best-effort: fine if the dashboard is off.
+        try:
+            from dashboard import app as dashboard_app
+            dashboard_app.register_bot(self)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ #
 
     def run(self):

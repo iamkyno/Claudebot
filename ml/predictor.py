@@ -86,6 +86,13 @@ class SignalPredictor:
             logger.debug(f"Scoring failed: {e}")
             return 0.5
 
+    def unload(self):
+        """Drop loaded models (used after a paper reset deactivates them all).
+        Both classes fall back to bootstrap mode until new models train."""
+        self._models.clear()
+        self._versions.clear()
+        self._load_attempted = True
+
     @property
     def has_model(self) -> bool:
         return bool(self._models)
