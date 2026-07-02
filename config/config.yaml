@@ -24,6 +24,18 @@ risk:
   use_kelly_sizing: true          # size by edge quality (ML win prob), capped by max_risk
   kelly_fraction: 0.5             # half-Kelly — smoother than full-Kelly
 
+# Trading-cost model. Applied to every paper fill and every PnL calculation so
+# paper results mean what they say. Live fills also net these out.
+fees:
+  spot_taker: 0.001               # 0.10% per side (Binance spot, no BNB discount)
+  futures_taker: 0.0005           # 0.05% per side (USDT-M futures)
+  slippage_bps: 2                 # est. market-order slippage per side (basis points)
+
+# Futures settings used when shorts go live (paper shorts are fully simulated).
+futures:
+  leverage: 2                     # conservative default
+  margin_mode: isolated           # isolate margin per position
+
 # Advanced engine features. Every one is independently switchable so you can
 # A/B them. All default ON.
 features:

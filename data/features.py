@@ -43,7 +43,12 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df["price_change_4h"] = df["close"].pct_change(4)
     df["price_change_24h"] = df["close"].pct_change(24)
 
-    df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx()
+    # ta's ADX implementation raises IndexError (not NaN) on frames shorter
+    # than ~2x its window — guard it so short frames degrade gracefully.
+    if len(df) >= 30:
+        df["adx"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx()
+    else:
+        df["adx"] = np.nan
     df["roc"] = ta.momentum.ROCIndicator(df["close"], window=12).roc()
 
     # VWAP resets at midnight UTC each day so scalpers get a true intraday mean.

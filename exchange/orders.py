@@ -9,16 +9,35 @@ logger = logging.getLogger(__name__)
 
 class OrderManager:
     def __init__(self, exchange_client, paper_mode: bool = False,
-                 paper_balance: float = 10_000.0, price_stream=None):
+                 paper_balance: float = 10_000.0, price_stream=None,
+                 fees_cfg: dict | None = None):
         self.client = exchange_client
         self.paper_mode = paper_mode
         self.price_stream = price_stream
+        fees_cfg = fees_cfg or {}
+        # Cost model: fees + slippage are applied to every paper fill and every
+        # PnL number so results are net, not gross-optimistic.
+        self.spot_fee = fees_cfg.get("spot_taker", 0.001)
+        self.futures_fee = fees_cfg.get("futures_taker", 0.0005)
+        self.slippage = fees_cfg.get("slippage_bps", 2) / 10_000.0
         self._paper_counter = 1
         # Virtual wallet for paper trading so the bot actually trades with no keys.
         self._paper_cash = float(paper_balance)
         self._paper_start = float(paper_balance)
-        # trade_id -> {symbol, qty, cost, side, entry}
+        # trade_id -> {symbol, qty, cost, side, entry, entry_fee}
         self._paper_positions: dict[int, dict] = {}
+
+    # -- cost model ------------------------------------------------------ #
+
+    def fee_rate(self, side: str) -> float:
+        """Shorts route to futures (cheaper taker); longs to spot."""
+        return self.futures_fee if side == "sell" else self.spot_fee
+
+    def _slip(self, price: float, order_side: str) -> float:
+        """Market orders cross the spread: buys fill high, sells fill low."""
+        if order_side == "buy":
+            return price * (1 + self.slippage)
+        return price * (1 - self.slippage)
 
     # -- pricing -------------------------------------------------------- #
 
@@ -39,8 +58,10 @@ class OrderManager:
         session = get_session()
         try:
             rows = session.execute(text(
-                "SELECT id, symbol, side, entry_price, quantity FROM trades WHERE status='open'"
+                "SELECT id, symbol, side, entry_price, quantity, COALESCE(fees, 0) "
+                "FROM trades WHERE status='open'"
             )).fetchall()
+            # Realized (net) PnL from closed trades persists across restarts.
             realized = float(session.execute(text(
                 "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='closed'"
             )).scalar() or 0.0)
@@ -51,11 +72,12 @@ class OrderManager:
         deployed = 0.0
         for r in rows:
             cost = float(r[3]) * float(r[4])
+            entry_fee = float(r[5])
             self._paper_positions[int(r[0])] = {
                 "symbol": r[1], "side": r[2], "entry": float(r[3]),
-                "qty": float(r[4]), "cost": cost,
+                "qty": float(r[4]), "cost": cost, "entry_fee": entry_fee,
             }
-            deployed += cost
+            deployed += cost + entry_fee   # entry fee already left the wallet
         self._paper_cash = max(self._paper_start + realized - deployed, 0.0)
         if rows:
             self._paper_counter = max(self._paper_counter, max(int(r[0]) for r in rows) + 1)
@@ -77,7 +99,6 @@ class OrderManager:
             except Exception:
                 position_value += pos["cost"]
                 continue
-            # value = reserved margin (cost) + unrealized PnL
             direction = 1 if pos["side"] == "buy" else -1
             unreal = (price - pos["entry"]) * pos["qty"] * direction
             position_value += pos["cost"] + unreal
@@ -94,37 +115,45 @@ class OrderManager:
         try:
             price = self._current_price(symbol)
             quantity = usdt_amount / price
+            rate = self.fee_rate(side)
 
-            min_qty = self.client.get_min_order_amount(symbol)
+            min_qty = self.client.get_min_order_amount(
+                symbol, venue="futures" if side == "sell" else "spot"
+            )
             if quantity < min_qty:
                 logger.warning(f"Order qty {quantity:.6f} below minimum {min_qty} for {symbol}")
                 return None
 
             if self.paper_mode:
-                order = self._paper_order(symbol, side, quantity, price)
-                fill_price = price
+                # Opening a short is a SELL order (fills low); a long BUYs (fills high).
+                fill_price = self._slip(price, side)
+                order = self._paper_order(symbol, side, quantity, fill_price)
             else:
-                # Shorts route to the futures venue; longs to spot.
-                venue = self.client.futures if side == "sell" else self.client.spot
-                order = venue.create_market_order(symbol, side, quantity)
+                order = self.client.open_futures_position(symbol, side, quantity) \
+                    if side == "sell" else \
+                    self.client.create_market_order(symbol, side, quantity)
                 fill_price = float(order.get("average") or order.get("price") or price)
 
+            entry_fee = fill_price * quantity * rate
             trade_id = self._log_trade(
                 symbol, strategy, side, fill_price, quantity,
-                stop_loss, take_profit, ml_confidence, signal_id,
+                stop_loss, take_profit, ml_confidence, signal_id, entry_fee,
             )
 
             if self.paper_mode and trade_id:
                 cost = quantity * fill_price
-                self._paper_cash -= cost
+                self._paper_cash -= cost + entry_fee
                 self._paper_positions[trade_id] = {
                     "symbol": symbol, "side": side, "entry": fill_price,
-                    "qty": quantity, "cost": cost,
+                    "qty": quantity, "cost": cost, "entry_fee": entry_fee,
                 }
 
             prefix = "[PAPER] " if self.paper_mode else ""
             tag = "LONG" if side == "buy" else "SHORT"
-            logger.info(f"{prefix}{tag} {quantity:.6f} {symbol} @ {fill_price:.4f} | {strategy}")
+            logger.info(
+                f"{prefix}{tag} {quantity:.6f} {symbol} @ {fill_price:.4f} "
+                f"| {strategy} | fee ${entry_fee:.4f}"
+            )
             return {"order": order, "trade_id": trade_id, "price": fill_price,
                     "quantity": quantity, "side": side}
         except Exception as e:
@@ -149,22 +178,24 @@ class OrderManager:
             price = self._current_price(symbol)
             close_side = "sell" if side == "buy" else "buy"
             close_qty = quantity * fraction
+            rate = self.fee_rate(side)
 
             if self.paper_mode:
-                order = self._paper_order(symbol, close_side, close_qty, price)
-                fill_price = price
+                fill_price = self._slip(price, close_side)
+                order = self._paper_order(symbol, close_side, close_qty, fill_price)
             else:
-                venue = self.client.futures if side == "sell" else self.client.spot
-                order = venue.create_market_order(symbol, close_side, close_qty)
+                order = self.client.close_futures_position(symbol, close_qty) \
+                    if side == "sell" else \
+                    self.client.create_market_order(symbol, close_side, close_qty)
                 fill_price = float(order.get("average") or order.get("price") or price)
 
             if fraction >= 1.0:
-                close_ok = self._close_trade(trade_id, fill_price)
+                close_ok = self._close_trade(trade_id, fill_price, rate)
             else:
-                close_ok = self._partial_close(trade_id, fill_price, close_qty)
+                close_ok = self._partial_close(trade_id, fill_price, close_qty, rate)
 
             if self.paper_mode and close_ok:
-                self._settle_paper(trade_id, fill_price, close_qty, side, fraction)
+                self._settle_paper(trade_id, fill_price, close_qty, side, fraction, rate)
 
             prefix = "[PAPER] " if self.paper_mode else ""
             tag = "CLOSE" if fraction >= 1.0 else f"TRIM {fraction:.0%}"
@@ -178,20 +209,28 @@ class OrderManager:
     def place_market_sell(self, symbol, quantity, strategy, trade_id=None):
         return self.close_position(symbol, quantity, trade_id, side="buy", fraction=1.0)
 
-    def _settle_paper(self, trade_id, fill_price, close_qty, side, fraction):
+    def _settle_paper(self, trade_id, fill_price, close_qty, side, fraction, rate):
+        """
+        Wallet identity: cash_out = cost + entry_fee at open;
+        cash_in = cost + gross - exit_fee at close, so over a round trip
+        cash change == gross - entry_fee - exit_fee == net PnL. Entry fee was
+        already paid at open, so it is NOT deducted again here.
+        """
         pos = self._paper_positions.get(trade_id)
         if not pos:
             return
         entry = pos["entry"]
         direction = 1 if side == "buy" else -1
-        realized = (fill_price - entry) * close_qty * direction
+        gross = (fill_price - entry) * close_qty * direction
+        exit_fee = fill_price * close_qty * rate
         released_margin = entry * close_qty
-        self._paper_cash += released_margin + realized
+        self._paper_cash += released_margin + gross - exit_fee
         if fraction >= 1.0:
             self._paper_positions.pop(trade_id, None)
         else:
             pos["qty"] -= close_qty
             pos["cost"] -= released_margin
+            pos["entry_fee"] *= (1 - fraction)
 
     # -- trailing stop -------------------------------------------------- #
 
@@ -249,23 +288,25 @@ class OrderManager:
                 "price": price, "status": "closed"}
 
     def _log_trade(self, symbol, strategy, side, entry_price, quantity,
-                   stop_loss, take_profit, ml_confidence, signal_id) -> Optional[int]:
+                   stop_loss, take_profit, ml_confidence, signal_id,
+                   entry_fee: float = 0.0) -> Optional[int]:
         session = get_session()
         try:
             result = session.execute(text("""
                 INSERT INTO trades
                     (symbol, strategy, side, entry_price, quantity, original_quantity,
-                     stop_loss, take_profit, highest_price, lowest_price,
+                     stop_loss, take_profit, highest_price, lowest_price, fees,
                      ml_confidence, signal_id, entry_time, status)
                 VALUES
                     (:symbol, :strategy, :side, :entry_price, :quantity, :quantity,
-                     :stop_loss, :take_profit, :entry_price, :entry_price,
+                     :stop_loss, :take_profit, :entry_price, :entry_price, :fees,
                      :ml_confidence, :signal_id, :entry_time, 'open')
                 RETURNING id
             """), {
                 "symbol": symbol, "strategy": strategy, "side": side,
                 "entry_price": entry_price, "quantity": quantity,
                 "stop_loss": stop_loss, "take_profit": take_profit,
+                "fees": entry_fee,
                 "ml_confidence": ml_confidence, "signal_id": signal_id,
                 "entry_time": datetime.utcnow(),
             })
@@ -279,7 +320,7 @@ class OrderManager:
         finally:
             session.close()
 
-    def _close_trade(self, trade_id: int, exit_price: float) -> bool:
+    def _close_trade(self, trade_id: int, exit_price: float, fee_rate: float = 0.0) -> bool:
         session = get_session()
         try:
             trade = session.execute(
@@ -291,18 +332,24 @@ class OrderManager:
             entry = float(trade.entry_price)
             qty = float(trade.quantity)
             direction = 1 if trade.side == "buy" else -1
-            pnl = (exit_price - entry) * qty * direction
-            pnl_pct = (exit_price - entry) / entry * direction
+            entry_fee = float(trade.fees or 0.0)
+            exit_fee = exit_price * qty * fee_rate
+            gross = (exit_price - entry) * qty * direction
+            pnl = gross - entry_fee - exit_fee            # NET of all costs
+            notional = entry * qty
+            pnl_pct = pnl / notional if notional else 0.0  # net %, fee-aware
             exit_time = datetime.utcnow()
             duration = int((exit_time - trade.entry_time).total_seconds() / 60)
 
             session.execute(text("""
                 UPDATE trades
                 SET exit_price=:exit_price, pnl=:pnl, pnl_pct=:pnl_pct,
-                    exit_time=:exit_time, duration_minutes=:duration, status='closed'
+                    fees=:fees, exit_time=:exit_time,
+                    duration_minutes=:duration, status='closed'
                 WHERE id=:id
             """), {
                 "exit_price": exit_price, "pnl": pnl, "pnl_pct": pnl_pct,
+                "fees": entry_fee + exit_fee,
                 "exit_time": exit_time, "duration": duration, "id": trade_id,
             })
 
@@ -324,11 +371,12 @@ class OrderManager:
         finally:
             session.close()
 
-    def _partial_close(self, trade_id: int, exit_price: float, close_qty: float) -> bool:
+    def _partial_close(self, trade_id: int, exit_price: float, close_qty: float,
+                       fee_rate: float = 0.0) -> bool:
         """
-        Realize PnL on part of a position: book a child closed-trade row for the
-        slice that was sold and shrink the parent's open quantity. Keeps the
-        rest of the position running with its stop moved to breakeven (TP1).
+        Realize NET PnL on part of a position: book a child closed-trade row
+        (with its pro-rata share of the entry fee + its own exit fee) and
+        shrink the parent, moving its stop to breakeven (TP1).
         """
         session = get_session()
         try:
@@ -336,14 +384,19 @@ class OrderManager:
                 text("SELECT * FROM trades WHERE id=:id"), {"id": trade_id}
             ).fetchone()
             if not trade or float(trade.quantity) <= close_qty:
-                # Nothing sensible to partially close — fall back to full close.
                 session.close()
-                return self._close_trade(trade_id, exit_price)
+                return self._close_trade(trade_id, exit_price, fee_rate)
 
             entry = float(trade.entry_price)
+            qty = float(trade.quantity)
             direction = 1 if trade.side == "buy" else -1
-            pnl = (exit_price - entry) * close_qty * direction
-            pnl_pct = (exit_price - entry) / entry * direction
+            frac = close_qty / qty
+            entry_fee_slice = float(trade.fees or 0.0) * frac
+            exit_fee = exit_price * close_qty * fee_rate
+            gross = (exit_price - entry) * close_qty * direction
+            pnl = gross - entry_fee_slice - exit_fee
+            notional = entry * close_qty
+            pnl_pct = pnl / notional if notional else 0.0
             now = datetime.utcnow()
             duration = int((now - trade.entry_time).total_seconds() / 60)
 
@@ -351,26 +404,28 @@ class OrderManager:
             session.execute(text("""
                 INSERT INTO trades
                     (symbol, strategy, side, entry_price, exit_price, quantity,
-                     pnl, pnl_pct, entry_time, exit_time, duration_minutes,
+                     pnl, pnl_pct, fees, entry_time, exit_time, duration_minutes,
                      stop_loss, take_profit, status, notes)
                 VALUES
                     (:symbol, :strategy, :side, :entry, :exit, :qty,
-                     :pnl, :pnl_pct, :entry_time, :exit_time, :duration,
+                     :pnl, :pnl_pct, :fees, :entry_time, :exit_time, :duration,
                      :stop, :tp, 'closed', 'partial TP1')
             """), {
                 "symbol": trade.symbol, "strategy": trade.strategy, "side": trade.side,
                 "entry": entry, "exit": exit_price, "qty": close_qty,
-                "pnl": pnl, "pnl_pct": pnl_pct, "entry_time": trade.entry_time,
-                "exit_time": now, "duration": duration,
+                "pnl": pnl, "pnl_pct": pnl_pct, "fees": entry_fee_slice + exit_fee,
+                "entry_time": trade.entry_time, "exit_time": now, "duration": duration,
                 "stop": trade.stop_loss, "tp": trade.take_profit,
             })
 
-            # Shrink the parent, move stop to breakeven, mark TP1 filled.
+            # Shrink the parent (quantity + its remaining entry-fee share),
+            # move stop to breakeven, mark TP1 filled.
             session.execute(text("""
                 UPDATE trades
-                SET quantity = quantity - :cq, stop_loss = :be, tp1_filled = 1
+                SET quantity = quantity - :cq, fees = fees * :keep,
+                    stop_loss = :be, tp1_filled = 1
                 WHERE id = :id
-            """), {"cq": close_qty, "be": entry, "id": trade_id})
+            """), {"cq": close_qty, "keep": 1 - frac, "be": entry, "id": trade_id})
 
             session.commit()
             return True

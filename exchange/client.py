@@ -54,6 +54,9 @@ class BinanceClient:
         pub = {"enableRateLimit": True}
         self.public = ccxt.binance({**pub, "options": {"defaultType": "spot"}})
 
+        # Symbols already configured for futures trading (margin mode + leverage).
+        self._futures_ready: set[str] = set()
+
         if self.config.get("binance", {}).get("testnet"):
             self.spot.set_sandbox_mode(True)
             self.futures.set_sandbox_mode(True)
@@ -104,11 +107,65 @@ class BinanceClient:
         markets = self.public.load_markets()
         return markets.get(symbol)
 
-    def get_min_order_amount(self, symbol: str) -> float:
+    def get_min_order_amount(self, symbol: str, venue: str = "spot") -> float:
+        if venue == "futures":
+            try:
+                markets = self.futures.load_markets()
+                info = markets.get(self._perp(symbol)) or markets.get(symbol)
+                if info:
+                    return info.get("limits", {}).get("amount", {}).get("min", 0) or 0
+            except Exception as e:
+                logger.debug(f"Futures min-qty lookup failed for {symbol}: {e}")
+            return 0
         info = self.get_symbol_info(symbol)
         if info:
             return info.get("limits", {}).get("amount", {}).get("min", 0)
         return 0
+
+    # -- futures (shorts) ------------------------------------------------ #
+
+    @staticmethod
+    def _perp(symbol: str) -> str:
+        """'BTC/USDT' -> 'BTC/USDT:USDT' (ccxt unified USDT-M perp symbol)."""
+        return symbol if ":" in symbol else f"{symbol}:USDT"
+
+    def prepare_futures_symbol(self, symbol: str, leverage: int = 2,
+                               margin_mode: str = "isolated"):
+        """
+        One-time-per-symbol setup before a live short: margin mode + leverage.
+        Both calls are best-effort — Binance errors if already set, which is fine.
+        """
+        perp = self._perp(symbol)
+        if perp in self._futures_ready:
+            return
+        try:
+            self.futures.set_margin_mode(margin_mode, perp)
+        except Exception as e:
+            logger.debug(f"set_margin_mode({perp}): {e}")
+        try:
+            self.futures.set_leverage(leverage, perp)
+        except Exception as e:
+            logger.debug(f"set_leverage({perp}): {e}")
+        self._futures_ready.add(perp)
+
+    @retry()
+    def open_futures_position(self, symbol: str, side: str, amount: float):
+        """Open a futures position (side='sell' opens a short)."""
+        if not self.has_keys:
+            raise RuntimeError("Futures order requires API keys")
+        self.prepare_futures_symbol(
+            symbol,
+            leverage=self.config.get("futures", {}).get("leverage", 2),
+            margin_mode=self.config.get("futures", {}).get("margin_mode", "isolated"),
+        )
+        return self.futures.create_market_order(self._perp(symbol), side, amount)
+
+    @retry()
+    def close_futures_position(self, symbol: str, amount: float):
+        """Buy back a short with reduceOnly so it can never flip into a long."""
+        return self.futures.create_market_order(
+            self._perp(symbol), "buy", amount, params={"reduceOnly": True}
+        )
 
     def get_orderbook_imbalance(self, symbol: str) -> float:
         """Returns ratio of bid volume to total volume at top 10 levels."""

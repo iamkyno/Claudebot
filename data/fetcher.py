@@ -24,6 +24,11 @@ class DataFetcher:
             return self._load_from_cache(symbol, timeframe, limit)
 
     def _cache(self, symbol: str, timeframe: str, df: pd.DataFrame):
+        # Only upsert the most recent candles: caching 500 rows per symbol per
+        # tick is ~30k writes/min across the universe for data that's already
+        # there. 120 rows keeps the offline fallback deep enough (>2x the 60-
+        # bar minimum every consumer requires) at a fraction of the DB load.
+        df = df.tail(120)
         session = get_session()
         try:
             for ts, row in df.iterrows():

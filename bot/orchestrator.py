@@ -1,5 +1,6 @@
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 import pandas as pd
@@ -67,7 +68,7 @@ class Orchestrator:
 
         self.orders = OrderManager(
             self.exchange, paper_mode=self.paper_mode, paper_balance=paper_balance,
-            price_stream=self.price_stream,
+            price_stream=self.price_stream, fees_cfg=cfg.get("fees", {}),
         )
         # Resume cleanly: rebuild the paper wallet from any positions left open
         # by a previous run so a restart doesn't reset cash or lose positions.
@@ -196,9 +197,16 @@ class Orchestrator:
         open_trades = self.orders.get_open_trades()
         self._check_exits(open_trades)
 
+        # Fan out all per-symbol I/O (OHLCV, HTF frame, funding, book, TV) in
+        # parallel, then take decisions sequentially so the wallet math stays
+        # single-threaded. Cuts a 20-symbol tick from ~40s to a few seconds.
+        prefetched = self._prefetch_symbols(self.symbols)
+
         for symbol in self.symbols:
             try:
-                open_trades = self._process_symbol(symbol, equity, free, open_trades)
+                open_trades = self._process_symbol(
+                    symbol, equity, free, open_trades, pre=prefetched.get(symbol)
+                )
                 free = self._free()
             except Exception as e:
                 logger.error(f"Error processing {symbol}: {e}")
@@ -212,18 +220,46 @@ class Orchestrator:
         if self._trades_since_retrain >= self._retrain_every:
             self._retrain()
 
-    def _process_symbol(self, symbol: str, equity: float, free: float, open_trades: list) -> list:
-        df = self.fetcher.fetch_ohlcv(symbol, self.timeframe)
+    def _prefetch_symbols(self, symbols: list) -> dict:
+        """Fetch every symbol's market data concurrently. Decisions stay
+        sequential; only the blocking I/O is parallelised."""
+        def _one(symbol):
+            try:
+                return symbol, {
+                    "df": self.fetcher.fetch_ohlcv(symbol, self.timeframe),
+                    "htf": self._htf_direction(symbol) if self.f_mtf else None,
+                    "funding": self._get_funding_rate(symbol),
+                    "ob": self.exchange.get_orderbook_imbalance(symbol),
+                    "tv": self.tv.score(symbol) if self.tv else None,
+                }
+            except Exception as e:
+                logger.debug(f"Prefetch failed for {symbol}: {e}")
+                return symbol, None
+
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            return dict(ex.map(_one, symbols))
+
+    def _process_symbol(self, symbol: str, equity: float, free: float,
+                        open_trades: list, pre: dict = None) -> list:
+        if pre is not None:
+            df = pre["df"]
+        else:
+            df = self.fetcher.fetch_ohlcv(symbol, self.timeframe)
         if df.empty or len(df) < 60:
             return open_trades
         df = compute_features(df)
 
         regime = classify_regime(df) if self.f_regime else None
-        htf_dir = self._htf_direction(symbol) if self.f_mtf else None
-
-        funding_rate = self._get_funding_rate(symbol)
-        ob_imbalance = self.exchange.get_orderbook_imbalance(symbol)
-        tv_score = self.tv.score(symbol) if self.tv else None
+        if pre is not None:
+            htf_dir = pre["htf"]
+            funding_rate = pre["funding"]
+            ob_imbalance = pre["ob"]
+            tv_score = pre["tv"]
+        else:
+            htf_dir = self._htf_direction(symbol) if self.f_mtf else None
+            funding_rate = self._get_funding_rate(symbol)
+            ob_imbalance = self.exchange.get_orderbook_imbalance(symbol)
+            tv_score = self.tv.score(symbol) if self.tv else None
 
         for strategy in self.strategies:
             # Bug #5 fix: re-check kill switch each iteration so a loss that
@@ -272,7 +308,7 @@ class Orchestrator:
             signal.features["orderbook_imbalance"] = ob_imbalance
             signal.features["tv_recommendation"] = tv_score
 
-            ok, ml_conf = self.predictor.should_trade(signal.features)
+            ok, ml_conf = self.predictor.should_trade(signal.features, strategy.name)
             signal_id = self.predictor.log_signal(
                 symbol, strategy.name, side, ml_conf, signal.features
             )
@@ -295,12 +331,13 @@ class Orchestrator:
             risk_dist = abs(price - stop_loss)
             reward_risk = abs(take_profit - price) / risk_dist if risk_dist > 0 else 2.0
 
+            has_model = self.predictor.has_model_for(strategy.name)
             size = self.risk.calculate_position_size(
                 free, price, atr, stop_loss,
-                win_prob=ml_conf if self.predictor.has_model else None,
+                win_prob=ml_conf if has_model else None,
                 reward_risk=reward_risk,
             )
-            if self.predictor.has_model:
+            if has_model:
                 size = self.risk.adjust_for_ml_confidence(size, ml_conf)
             # Capital allocation by rolling risk-adjusted performance.
             if self.f_sharpe_size:
@@ -343,7 +380,7 @@ class Orchestrator:
         if not self.risk.can_open_position(open_trades, "pair_trading", free):
             return
 
-        ok, ml_conf = self.predictor.should_trade(signal.features)
+        ok, ml_conf = self.predictor.should_trade(signal.features, "pair_trading")
         if not ok:
             return
 
@@ -371,6 +408,19 @@ class Orchestrator:
         open_trades = self.orders.get_open_trades()
         free = self._free()
 
+        # Prefetch both timeframes + the orderbook for every scalp symbol at once.
+        def _one(symbol):
+            try:
+                return symbol, {
+                    "df": self.fetcher.fetch_ohlcv(symbol, self.scalp_entry_tf, limit=300),
+                    "trend": self.fetcher.fetch_ohlcv(symbol, self.scalp_trend_tf, limit=200),
+                    "ob": self.exchange.get_orderbook_imbalance(symbol),
+                }
+            except Exception:
+                return symbol, None
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            pre = dict(ex.map(_one, scalp_symbols))
+
         for symbol in scalp_symbols:
             try:
                 if self.guards.is_killed:
@@ -382,11 +432,12 @@ class Orchestrator:
                 if self.guards.check_symbol_cap(symbol, open_trades):
                     continue
 
-                df = self.fetcher.fetch_ohlcv(symbol, self.scalp_entry_tf, limit=300)
+                bundle = pre.get(symbol)
+                if not bundle:
+                    continue
+                df, df_trend, ob = bundle["df"], bundle["trend"], bundle["ob"]
                 if df.empty or len(df) < 60:
                     continue
-                df_trend = self.fetcher.fetch_ohlcv(symbol, self.scalp_trend_tf, limit=200)
-                ob = self.exchange.get_orderbook_imbalance(symbol)
 
                 signal = self.scalper.generate_signal(
                     symbol, df, df_trend=df_trend, ob_imbalance=ob
@@ -402,7 +453,7 @@ class Orchestrator:
                 signal.features["orderbook_imbalance"] = ob
                 signal.features["tv_recommendation"] = tv_score
 
-                ok, ml_conf = self.predictor.should_trade(signal.features)
+                ok, ml_conf = self.predictor.should_trade(signal.features, "scalp")
                 signal_id = self.predictor.log_signal(
                     symbol, "scalp", "buy", ml_conf, signal.features
                 )
@@ -413,12 +464,13 @@ class Orchestrator:
                 atr = float(df.iloc[-1].get("atr", 0)) or price * 0.005
                 rr = (abs(signal.take_profit - price) / abs(price - signal.stop_loss)
                       if signal.stop_loss and abs(price - signal.stop_loss) > 0 else 2.0)
+                has_model = self.predictor.has_model_for("scalp")
                 size = self.risk.calculate_position_size(
                     free, price, atr, signal.stop_loss,
-                    win_prob=ml_conf if self.predictor.has_model else None,
+                    win_prob=ml_conf if has_model else None,
                     reward_risk=rr,
                 )
-                if self.predictor.has_model:
+                if has_model:
                     size = self.risk.adjust_for_ml_confidence(size, ml_conf)
                 if self.f_sharpe_size:
                     size = round(size * self.guards.strategy_size_multiplier("scalp"), 2)
@@ -442,12 +494,30 @@ class Orchestrator:
                 logger.error(f"Scalp error {symbol}: {e}")
 
     def _check_exits(self, open_trades: list):
+        if not open_trades:
+            return
+
+        # Prefetch each distinct (symbol, timeframe) frame concurrently.
+        needs = {}
+        for trade in open_trades:
+            strat = self._exit_lookup.get(trade.strategy)
+            tf = getattr(strat, "timeframe", None) or self.timeframe
+            needs[(trade.symbol, tf)] = None
+        def _one(key):
+            sym, tf = key
+            try:
+                return key, self.fetcher.fetch_ohlcv(sym, tf)
+            except Exception:
+                return key, None
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            frames = dict(ex.map(_one, list(needs.keys())))
+
         for trade in open_trades:
             strat = self._exit_lookup.get(trade.strategy)
             # Scalp trades are exited on their own (fast) timeframe.
             tf = getattr(strat, "timeframe", None) or self.timeframe
-            df = self.fetcher.fetch_ohlcv(trade.symbol, tf)
-            if df.empty:
+            df = frames.get((trade.symbol, tf))
+            if df is None or df.empty:
                 continue
 
             side = getattr(trade, "side", "buy") or "buy"
@@ -455,8 +525,13 @@ class Orchestrator:
             atr = float(df.iloc[-1].get("atr", 0)) or price * 0.01
 
             # 1) Trailing stop — ratchet the stop toward price, never away.
+            # The returned value is used immediately below so a stop raised
+            # THIS tick can also fire this tick (no one-tick staleness).
+            eff_stop = float(trade.stop_loss) if trade.stop_loss else None
             if self.f_trailing:
-                self._update_trailing(trade, side, price, atr)
+                new_stop = self._update_trailing(trade, side, price, atr)
+                if new_stop is not None:
+                    eff_stop = new_stop
 
             # 2) Partial take-profit — bank a slice at TP1, stop to breakeven.
             if self.f_partial_tp and not getattr(trade, "tp1_filled", 0):
@@ -470,7 +545,8 @@ class Orchestrator:
                     continue  # re-evaluate the remainder next tick
 
             # 3) Hard bracket (side-aware) or strategy discretionary exit.
-            exit_now = self._hard_exit(trade, side, price)
+            tp = float(trade.take_profit) if trade.take_profit else None
+            exit_now = self._hard_exit(side, price, eff_stop, tp)
             if not exit_now and side == "buy" and strat is not None:
                 # Strategy exits are written long-centric; only apply to longs.
                 try:
@@ -501,9 +577,8 @@ class Orchestrator:
                 return float(p)
         return float(df.iloc[-1]["close"])
 
-    def _hard_exit(self, trade, side: str, price: float) -> bool:
-        stop = float(trade.stop_loss) if trade.stop_loss else None
-        tp = float(trade.take_profit) if trade.take_profit else None
+    @staticmethod
+    def _hard_exit(side: str, price: float, stop: float | None, tp: float | None) -> bool:
         if side == "buy":
             return bool((stop and price <= stop) or (tp and price >= tp))
         return bool((stop and price >= stop) or (tp and price <= tp))
@@ -516,7 +591,9 @@ class Orchestrator:
         tp1 = entry + (tp - entry) * self.tp1_ratio
         return price >= tp1 if side == "buy" else price <= tp1
 
-    def _update_trailing(self, trade, side: str, price: float, atr: float):
+    def _update_trailing(self, trade, side: str, price: float, atr: float) -> float | None:
+        """Ratchet the stop toward price. Returns the new stop when it moved
+        (so the caller can act on it this tick), else None."""
         if side == "buy":
             hi = float(trade.highest_price) if trade.highest_price else float(trade.entry_price)
             if price > hi:
@@ -525,6 +602,7 @@ class Orchestrator:
                 cur = float(trade.stop_loss) if trade.stop_loss else 0.0
                 if new_stop > cur:
                     self.orders.update_stop(trade.id, new_stop)
+                    return new_stop
         else:
             lo = float(trade.lowest_price) if trade.lowest_price else float(trade.entry_price)
             if price < lo:
@@ -533,6 +611,8 @@ class Orchestrator:
                 cur = float(trade.stop_loss) if trade.stop_loss else 1e18
                 if new_stop < cur:
                     self.orders.update_stop(trade.id, new_stop)
+                    return new_stop
+        return None
 
     def _htf_direction(self, symbol: str):
         """4h trend direction gate: 'up', 'down', or None (mixed/unknown)."""
@@ -567,12 +647,15 @@ class Orchestrator:
         return True
 
     def _retrain(self):
-        logger.info("Retraining ML model…")
-        result = self.trainer.train()
-        if result:
+        logger.info("Retraining ML models…")
+        results = self.trainer.train()   # one record per strategy class that trained
+        if results:
             self.predictor.load_model()
-            m = result["metrics"]
-            self.notifier.model_retrained(result["version"], m["accuracy"], m["f1"], m["training_samples"])
+            for r in results:
+                m = r["metrics"]
+                self.notifier.model_retrained(
+                    r["version"], m["accuracy"], m["f1"], m["training_samples"]
+                )
         self._trades_since_retrain = 0
 
     # ------------------------------------------------------------------ #
