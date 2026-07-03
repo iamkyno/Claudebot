@@ -1,0 +1,19 @@
+{
+  "ema_cross": {
+    "stop_atr": 2.25,
+    "tp_atr": 6.0,
+    "adx_min": 25
+  },
+  "meta": {
+    "ema_cross": {
+      "source": "backtest.optimize",
+      "evidence": {
+        "n": 64,
+        "wr": 34.4,
+        "net_bps": 3260.1,
+        "pf": 1.47,
+        "folds_positive": 3
+      }
+    }
+  }
+}
