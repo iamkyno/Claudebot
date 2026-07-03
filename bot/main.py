@@ -41,4 +41,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Ctrl+C during startup (before the main loop's own handler exists).
+        logging.getLogger("bot.main").info("Interrupted during startup — nothing to clean up.")

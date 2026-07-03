@@ -179,20 +179,56 @@ class Orchestrator:
         logger.info(f"Balance: ${equity:,.2f}")
 
         interval = self.cfg["bot"].get("loop_interval_seconds", 60)
-        while True:
-            try:
-                self._tick()
-            except KeyboardInterrupt:
-                logger.info("Stopped by user")
-                self._liq_feed.stop()
-                if self.scalp_engine:
-                    self.scalp_engine.stop()
-                if self.price_stream:
-                    self.price_stream.stop()
-                break
-            except Exception as e:
-                logger.error(f"Loop error: {e}", exc_info=True)
-            time.sleep(interval)
+        # Ctrl+C almost always lands inside time.sleep(), so the interrupt
+        # must be caught around the WHOLE loop — tick and sleep — or the
+        # shutdown path is skipped and the process dies with a raw traceback.
+        try:
+            while True:
+                try:
+                    self._tick()
+                except Exception as e:
+                    logger.error(f"Loop error: {e}", exc_info=True)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            logger.info("Stopped by user — shutting down gracefully…")
+        finally:
+            self._shutdown()
+
+    def _shutdown(self):
+        """Stop background threads and report what carries over to next start."""
+        try:
+            if self.scalp_engine:
+                self.scalp_engine.stop()
+            self._liq_feed.stop()
+            if self.price_stream:
+                self.price_stream.stop()
+            # Give the scalp engine a moment to finish an in-flight close —
+            # its DB commits are atomic either way, this just avoids cutting
+            # a close between the exchange fill and the log line.
+            if self.scalp_engine:
+                self.scalp_engine.join(timeout=5)
+
+            open_trades = self.orders.get_open_trades()
+            if open_trades:
+                logger.info(
+                    f"{len(open_trades)} position(s) remain open — they persist in "
+                    f"the database and resume (wallet reconciled) on next start:"
+                )
+                for t in open_trades:
+                    logger.info(
+                        f"  #{t.id} {t.strategy} {(t.side or 'buy').upper()} "
+                        f"{t.symbol} qty={float(t.quantity):.6f} "
+                        f"@ {float(t.entry_price):.4f} stop={float(t.stop_loss or 0):.4f}"
+                    )
+                if not self.paper_mode:
+                    logger.warning(
+                        "LIVE MODE: these positions are UNMANAGED while the bot is "
+                        "down — stops/TPs are enforced by the bot, not the exchange. "
+                        "Close positions before extended downtime."
+                    )
+            logger.info("Shutdown complete")
+        except Exception as e:
+            logger.error(f"Shutdown error: {e}")
 
     # ------------------------------------------------------------------ #
 
