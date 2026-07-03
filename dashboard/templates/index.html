@@ -12,17 +12,19 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { -webkit-font-smoothing: antialiased; }
 :root {
-  --bg:    #070502;
-  --s1:    #0d0a05;
-  --s2:    #131007;
-  --b1:    #261e0c;
-  --b2:    #3c2e10;
-  --amber: #ffb000;
-  --amber2:#c98c08;
-  --adim:  rgba(255,176,0,.12);
-  --ink:   #e8ddc0;
-  --ink2:  #9c8f6b;
-  --ink3:  #625941;
+  /* Ice-cyan on graphite. NOTE: --amber/--amber2 kept as legacy var NAMES
+     (referenced throughout) but now hold the cyan accent values. */
+  --bg:    #060a10;
+  --s1:    #0b111a;
+  --s2:    #111a28;
+  --b1:    #24344c;
+  --b2:    #3a5273;
+  --amber: #4dd7fa;
+  --amber2:#2fa3c4;
+  --adim:  rgba(77,215,250,.12);
+  --ink:   #e2eaf5;
+  --ink2:  #a4b6cf;
+  --ink3:  #71869f;
   --g:     #2fd575;
   --g-dim: rgba(47,213,117,.12);
   --r:     #ff5252;
@@ -32,12 +34,6 @@ html { -webkit-font-smoothing: antialiased; }
 body {
   background: var(--bg); color: var(--ink);
   font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
-}
-/* phosphor scanlines — very faint, the terminal feel without the gimmick */
-body::before {
-  content: ""; position: fixed; inset: 0; z-index: 999; pointer-events: none;
-  background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
-  opacity: .35;
 }
 ::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
@@ -65,7 +61,7 @@ body::before {
   padding: 3px 9px; font-size: 10.5px; font-weight: 600; letter-spacing: .05em;
   border: 1px solid transparent;
 }
-.p-paper { background: var(--adim); color: var(--amber); border-color: rgba(255,176,0,.3); }
+.p-paper { background: var(--adim); color: var(--amber); border-color: rgba(77,215,250,.35); }
 .p-live  { background: var(--r-dim); color: var(--r); border-color: rgba(255,82,82,.4); }
 #mode-pill { cursor: pointer; }
 #mode-pill:hover { border-color: currentColor; }
@@ -79,7 +75,7 @@ body::before {
 .tbs { display: flex; flex-direction: column; justify-content: center; padding: 0 15px; border-right: 1px solid var(--b1); min-width: 104px; }
 .tbs .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink3); line-height: 1; margin-bottom: 4px; }
 .tbs .val { font-size: 14px; font-weight: 600; line-height: 1; }
-.tbs.hero .val { font-size: 17px; color: var(--amber); text-shadow: 0 0 12px rgba(255,176,0,.35); }
+.tbs.hero .val { font-size: 17px; color: var(--amber); text-shadow: 0 0 12px rgba(77,215,250,.4); }
 
 .tb-actions { display: flex; align-items: center; gap: 8px; padding: 0 12px; margin-left: auto; border-left: 1px solid var(--b1); }
 .tbtn {
@@ -87,7 +83,7 @@ body::before {
   padding: 5px 11px; cursor: pointer; background: transparent;
   transition: all .15s ease;
 }
-.tbtn.warn   { color: var(--amber); border: 1px solid rgba(255,176,0,.4); }
+.tbtn.warn   { color: var(--amber); border: 1px solid rgba(77,215,250,.45); }
 .tbtn.warn:hover   { background: var(--amber); color: #000; }
 .tbtn.danger { color: var(--r); border: 1px solid rgba(255,82,82,.4); }
 .tbtn.danger:hover { background: var(--r); color: #000; }
@@ -118,7 +114,7 @@ body::before {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-bottom: 1px solid var(--b1);
   font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .14em;
-  color: var(--amber); text-shadow: 0 0 10px rgba(255,176,0,.3);
+  color: var(--amber); text-shadow: 0 0 10px rgba(77,215,250,.35);
 }
 .box-head::before { content: "▮ "; color: var(--amber2); }
 .box-head .bcount {
@@ -136,8 +132,8 @@ thead th {
   position: sticky; top: 0; z-index: 2;
 }
 thead th.r { text-align: right; }
-tbody td { padding: 5.5px 10px; font-size: 12px; border-bottom: 1px solid rgba(255,176,0,.05); white-space: nowrap; }
-tbody tr:hover { background: rgba(255,176,0,.045); }
+tbody td { padding: 5.5px 10px; font-size: 12px; border-bottom: 1px solid rgba(255,255,255,.07); white-space: nowrap; }
+tbody tr:hover { background: rgba(120,170,230,.07); }
 tbody tr:last-child td { border-bottom: none; }
 td.r { text-align: right; }
 
@@ -148,7 +144,7 @@ td.r { text-align: right; }
   display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: .05em;
   padding: 2px 7px; border: 1px solid var(--b2); color: var(--ink2); background: var(--s2);
 }
-.st-ema_cross { color: var(--amber); border-color: rgba(255,176,0,.35); }
+.st-ema_cross { color: var(--amber); border-color: rgba(77,215,250,.4); }
 .st-scalp { color: #6fd7c9; border-color: rgba(111,215,201,.3); }
 .st-grid { color: #c9a2ff; border-color: rgba(201,162,255,.3); }
 .st-rsi_bb { color: #7fb4ff; border-color: rgba(127,180,255,.3); }
@@ -166,7 +162,7 @@ td.r { text-align: right; }
 /* ── HEATMAP ─────────────────────────────────────────────── */
 .heat-wrap { padding: 12px 14px; }
 .heat-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px); gap: 3px; justify-content: start; }
-.hc { width: 13px; height: 13px; background: #14100a; border: 1px solid #1d160b; position: relative; }
+.hc { width: 13px; height: 13px; background: #101826; border: 1px solid #223146; position: relative; }
 .hc.p1 { background: #14532d; border-color: #14532d; }
 .hc.p2 { background: #1f9d55; border-color: #1f9d55; }
 .hc.p3 { background: #2fd575; border-color: #2fd575; }
@@ -185,8 +181,8 @@ td.r { text-align: right; }
 /* ── ACTIVITY ────────────────────────────────────────────── */
 .act-wrap { padding: 12px 14px 8px; display: flex; flex-direction: column; height: calc(100% - 35px); }
 .act-bars { display: flex; align-items: flex-end; gap: 2px; flex: 1; min-height: 88px; }
-.act-bar { flex: 1; background: #2a2412; min-height: 2px; position: relative; transition: height .4s ease; }
-.act-bar.peak { background: var(--amber); box-shadow: 0 0 6px rgba(255,176,0,.4); }
+.act-bar { flex: 1; background: #1c2939; min-height: 2px; position: relative; transition: height .4s ease; }
+.act-bar.peak { background: var(--amber); box-shadow: 0 0 6px rgba(77,215,250,.45); }
 .act-bar.now  { outline: 1px solid var(--ink); outline-offset: 1px; }
 .act-bar:hover::after {
   content: attr(data-tip); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
@@ -200,9 +196,9 @@ td.r { text-align: right; }
 
 /* ── STRATEGY PERF ───────────────────────────────────────── */
 .strat-list { padding: 2px 0; }
-.strat-item { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 8px 12px; gap: 8px; border-bottom: 1px solid rgba(255,176,0,.05); }
+.strat-item { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 8px 12px; gap: 8px; border-bottom: 1px solid rgba(255,255,255,.07); }
 .strat-item:last-child { border-bottom: none; }
-.strat-item:hover { background: rgba(255,176,0,.04); }
+.strat-item:hover { background: rgba(120,170,230,.06); }
 .strat-name { font-weight: 500; display: flex; align-items: center; gap: 7px; }
 .strat-sub { font-size: 10.5px; color: var(--ink3); margin-top: 3px; }
 .strat-pnl { font-size: 12.5px; font-weight: 700; text-align: right; }
@@ -356,19 +352,19 @@ const pnlChart = new Chart(ctx, {
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#131007', borderColor: '#3c2e10', borderWidth: 1,
+        backgroundColor: '#111a28', borderColor: '#3a5273', borderWidth: 1,
         padding: { x:12, y:9 }, cornerRadius: 0,
-        titleColor: '#9c8f6b', titleFont: { size: 10, family:"'IBM Plex Mono'" },
-        bodyColor: '#e8ddc0', bodyFont: { size: 12.5, family:"'IBM Plex Mono'", weight:600 },
+        titleColor: '#a4b6cf', titleFont: { size: 10, family:"'IBM Plex Mono'" },
+        bodyColor: '#e2eaf5', bodyFont: { size: 12.5, family:"'IBM Plex Mono'", weight:600 },
         displayColors: false,
         callbacks: { label: c => ' '+(c.parsed.y>=0?'+$':'-$')+Math.abs(c.parsed.y).toLocaleString() }
       }
     },
     scales: {
-      x: { grid:{display:false}, ticks:{color:'#625941',font:{size:10,family:"'IBM Plex Mono'"},maxTicksLimit:7}, border:{display:false} },
+      x: { grid:{display:false}, ticks:{color:'#71869f',font:{size:10,family:"'IBM Plex Mono'"},maxTicksLimit:7}, border:{display:false} },
       y: {
-        grid: { color:'rgba(255,176,0,.06)', drawBorder:false },
-        ticks: { color:'#625941', font:{size:10,family:"'IBM Plex Mono'"}, callback: v=>(v>=0?'$':'-$')+Math.abs(v) },
+        grid: { color:'rgba(140,175,215,.08)', drawBorder:false },
+        ticks: { color:'#71869f', font:{size:10,family:"'IBM Plex Mono'"}, callback: v=>(v>=0?'$':'-$')+Math.abs(v) },
         border:{display:false}
       }
     }
