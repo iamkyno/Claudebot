@@ -270,6 +270,24 @@ async def strategy_performance():
         session.close()
 
 
+@app.get("/api/pnl/daily")
+async def pnl_daily(days: int = 84):
+    """Net PnL per UTC day for the calendar heatmap (last `days` days)."""
+    session = get_session()
+    try:
+        rows = session.execute(text("""
+            SELECT DATE(exit_time) AS d, SUM(pnl) AS pnl, COUNT(*) AS n
+            FROM trades
+            WHERE status = 'closed' AND exit_time IS NOT NULL
+              AND exit_time > NOW() - (:days || ' days')::interval
+            GROUP BY DATE(exit_time) ORDER BY d
+        """), {"days": days}).fetchall()
+        return [{"date": str(r[0]), "pnl": round(float(r[1] or 0), 2),
+                 "trades": int(r[2])} for r in rows]
+    finally:
+        session.close()
+
+
 @app.get("/api/activity")
 async def market_activity():
     """
