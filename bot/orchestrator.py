@@ -79,15 +79,24 @@ class Orchestrator:
         self.guards = RiskGuards(cfg["risk"])
         self.sentiment = SentimentFeed() if self.f_sentiment else None
 
-        # All strategies receive only the risk config — thresholds are self-computed
+        # All strategies receive the risk config plus any optimizer-derived
+        # tuning for their name (config/tuning.json) — evidence over defaults.
         risk_cfg = cfg["risk"]
+        tuning = get_tuning()
+
+        def s_cfg(name: str) -> dict:
+            t = tuning.get(name, {})
+            if t:
+                logger.info(f"Applying optimizer tuning to {name}: {t}")
+            return {**risk_cfg, **t}
+
         self.strategies = [
-            RSIBBStrategy(risk_cfg),
-            EMACrossStrategy(risk_cfg),
-            FundingRateStrategy(risk_cfg),
-            LiquidationCascadeStrategy(risk_cfg),
-            GridStrategy(risk_cfg),
-            PairTradingStrategy(risk_cfg),
+            RSIBBStrategy(s_cfg("rsi_bb")),
+            EMACrossStrategy(s_cfg("ema_cross")),
+            FundingRateStrategy(s_cfg("funding_rate")),
+            LiquidationCascadeStrategy(s_cfg("liquidation_cascade")),
+            GridStrategy(s_cfg("grid")),
+            PairTradingStrategy(s_cfg("pair_trading")),
         ]
 
         # Fee-aware scalper — fast in/out on a low timeframe, runs separately

@@ -4,8 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.optimize import precompute, simulate, score, pick_best
+from backtest.optimize import (
+    ema_precompute, ema_simulate, pick_best, precompute, score, simulate,
+)
 from exchange.orders import OrderManager
+from strategies.ema_cross import EMACrossStrategy
 from strategies.scalping import ScalpStrategy
 
 
@@ -104,6 +107,41 @@ class TestOptimizerSim:
         # Can't hold more sim-trades than bars/1 — loose sanity bound; the
         # busy_until lockout is what this guards.
         assert len(rets) < F["n"] / 2
+
+    def test_ema_tunables_override_defaults(self):
+        s = EMACrossStrategy({"stop_atr": 3.0, "tp_atr": 6.0, "adx_min": 25})
+        assert s.stop_atr == 3.0 and s.tp_atr == 6.0 and s.adx_min == 25
+
+    def test_ema_defaults_match_previous_behavior(self):
+        s = EMACrossStrategy({"atr_stop_multiplier": 1.5})
+        assert s.stop_atr == pytest.approx(2.25)   # 1.5 * 1.5
+        assert s.tp_atr == pytest.approx(4.5)      # 1.5 * 3.0
+        assert s.adx_min == 20
+
+    def test_ema_sim_trades_uptrend_profitably(self):
+        # Drifting market with pullback waves: EMAs re-cross with ADX still
+        # elevated and volume arriving on the up-legs — the shape ema_cross
+        # is built to trade. The sim must fire and profit here.
+        bars = 3000
+        rng = np.random.default_rng(11)
+        t = np.arange(bars)
+        logp = (np.log(100) + 0.0004 * t
+                + 0.02 * np.sin(2 * np.pi * t / 100)
+                + rng.normal(0, 0.0005, bars))
+        close = np.exp(logp)
+        r = np.diff(logp, prepend=logp[0])
+        vol = 10 * (1 + 50 * np.clip(r, 0, None)) * rng.uniform(0.9, 1.1, bars)
+        idx = pd.date_range("2024-01-01", periods=bars, freq="h")
+        df = pd.DataFrame({"open": np.roll(close, 1), "high": close * 1.003,
+                           "low": close * 0.997, "close": close,
+                           "volume": vol}, index=idx)
+        df.iloc[0, df.columns.get_loc("open")] = close[0]
+
+        F = ema_precompute(df)
+        assert F["cross_up"].sum() > 5
+        rets = ema_simulate(F, stop_atr=2.25, tp_atr=4.5, adx_min=15)
+        assert len(rets) > 5
+        assert rets.sum() > 0   # trend-following must profit in a rising market
 
     def test_pick_best_requires_robustness(self):
         weak = [{"n": 10, "net_bps": 500, "pf": 9.9, "folds_positive": 3,

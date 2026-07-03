@@ -22,6 +22,12 @@ class EMACrossStrategy(BaseStrategy):
         super().__init__(config)
         self.name = "ema_cross"
         self.atr_stop_mult = config.get("atr_stop_multiplier", 1.5)
+        # Bracket + trend-strength gate — tunable, overridden by
+        # config/tuning.json when the optimizer has found better values on
+        # historical data (python -m backtest.optimize --apply).
+        self.stop_atr = float(config.get("stop_atr", self.atr_stop_mult * 1.5))
+        self.tp_atr = float(config.get("tp_atr", self.atr_stop_mult * 3.0))
+        self.adx_min = float(config.get("adx_min", 20))
 
     # ------------------------------------------------------------------ #
 
@@ -69,9 +75,9 @@ class EMACrossStrategy(BaseStrategy):
         vol_confirming = (float(last["volume_ratio"]) > 1.0
                           if pd.notna(last.get("volume_ratio")) else True)
 
-        if bullish_cross and adx > 20 and vol_confirming:
-            stop = round(price - atr * self.atr_stop_mult * 1.5, 8)
-            tp = round(price + atr * self.atr_stop_mult * 3.0, 8)
+        if bullish_cross and adx > self.adx_min and vol_confirming:
+            stop = round(price - atr * self.stop_atr, 8)
+            tp = round(price + atr * self.tp_atr, 8)
             conf = min(0.60 + adx / 200, 0.90)
             return Signal(symbol=symbol, strategy=self.name, signal_type="buy",
                           confidence=conf, stop_loss=stop, take_profit=tp, features=features)
