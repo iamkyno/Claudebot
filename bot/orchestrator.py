@@ -178,6 +178,12 @@ class Orchestrator:
         self.guards.set_starting_balance(equity)
         logger.info(f"Balance: ${equity:,.2f}")
 
+        # Train at startup when no model is active but labelled data exists.
+        # The retrain counter lives in memory, so frequent restarts used to
+        # reset it forever and no model ever trained despite ample data.
+        if not self.predictor.has_model:
+            self._retrain()
+
         interval = self.cfg["bot"].get("loop_interval_seconds", 60)
         # Ctrl+C almost always lands inside time.sleep(), so the interrupt
         # must be caught around the WHOLE loop — tick and sleep — or the
@@ -546,10 +552,10 @@ class Orchestrator:
                 if size <= 0:
                     continue
 
-                result = self.orders.place_market_buy(
-                    symbol=symbol, usdt_amount=size, strategy="scalp",
+                result = self.orders.open_position(
+                    symbol=symbol, side="buy", usdt_amount=size, strategy="scalp",
                     stop_loss=signal.stop_loss, take_profit=signal.take_profit,
-                    ml_confidence=ml_conf, signal_id=signal_id,
+                    ml_confidence=ml_conf, signal_id=signal_id, venue="futures",
                 )
                 if result:
                     self.notifier.trade_opened(
@@ -602,12 +608,14 @@ class Orchestrator:
                 if new_stop is not None:
                     eff_stop = new_stop
 
+            venue = "futures" if trade.strategy == "scalp" else None
+
             # 2) Partial take-profit — bank a slice at TP1, stop to breakeven.
             if self.f_partial_tp and not getattr(trade, "tp1_filled", 0):
                 if self._tp1_reached(trade, side, price):
                     r = self.orders.close_position(
                         trade.symbol, float(trade.quantity), trade.id,
-                        side=side, fraction=self.tp1_close,
+                        side=side, fraction=self.tp1_close, venue=venue,
                     )
                     if r:
                         self._trades_since_retrain += 1
@@ -626,7 +634,7 @@ class Orchestrator:
             if exit_now:
                 result = self.orders.close_position(
                     trade.symbol, float(trade.quantity), trade.id,
-                    side=side, fraction=1.0,
+                    side=side, fraction=1.0, venue=venue,
                 )
                 if result:
                     ep = result["price"]

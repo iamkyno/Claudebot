@@ -78,6 +78,16 @@ class TestShortRoundTrip:
         assert om.fee_rate("sell") == 0.0005
         assert om.fee_rate("buy") == 0.001
 
+    def test_futures_venue_long_pays_futures_fee(self, om):
+        """Scalp longs route to futures — their edge math (~0.19% targets)
+        only clears the 0.10% futures round trip, never the 0.20% spot one."""
+        assert om.fee_rate("buy", venue="futures") == 0.0005
+
+    def test_futures_venue_open_charges_futures_fee(self, om):
+        om.open_position("BTC/USDT", "buy", 1000.0, "scalp", 99, 101, venue="futures")
+        # cost 1000 + futures fee 0.50 (not the spot 1.00)
+        assert om.free_cash() == pytest.approx(10_000 - 1000.5)
+
 
 class TestSlippage:
     def test_buy_fills_above_sell_fills_below(self, monkeypatch):

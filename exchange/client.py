@@ -161,10 +161,13 @@ class BinanceClient:
         return self.futures.create_market_order(self._perp(symbol), side, amount)
 
     @retry()
-    def close_futures_position(self, symbol: str, amount: float):
-        """Buy back a short with reduceOnly so it can never flip into a long."""
+    def close_futures_position(self, symbol: str, amount: float,
+                               close_side: str = "buy"):
+        """Close a futures position with reduceOnly so the order can only
+        shrink the position, never flip it (buy closes shorts, sell closes
+        futures longs)."""
         return self.futures.create_market_order(
-            self._perp(symbol), "buy", amount, params={"reduceOnly": True}
+            self._perp(symbol), close_side, amount, params={"reduceOnly": True}
         )
 
     def get_orderbook_imbalance(self, symbol: str) -> float:

@@ -33,9 +33,12 @@ class OrderManager:
 
     # -- cost model ------------------------------------------------------ #
 
-    def fee_rate(self, side: str) -> float:
-        """Shorts route to futures (cheaper taker); longs to spot."""
-        return self.futures_fee if side == "sell" else self.spot_fee
+    def fee_rate(self, side: str, venue: str = None) -> float:
+        """Futures venue (all shorts + strategies that request it, e.g. the
+        scalper) pays futures taker; everything else pays spot taker."""
+        if venue == "futures" or side == "sell":
+            return self.futures_fee
+        return self.spot_fee
 
     def _slip(self, price: float, order_side: str) -> float:
         """Market orders cross the spread: buys fill high, sells fill low."""
@@ -128,15 +131,20 @@ class OrderManager:
         self, symbol: str, side: str, usdt_amount: float, strategy: str,
         stop_loss: float, take_profit: float,
         ml_confidence: float = None, signal_id: int = None,
+        venue: str = None,
     ) -> Optional[dict]:
-        """Open a long (side='buy') or short (side='sell') position."""
+        """Open a long (side='buy') or short (side='sell') position.
+        venue='futures' routes to futures and pays futures fees — the scalper
+        uses this: its edge math assumes futures costs (spot fees exceed its
+        typical target and would guarantee a net loss even on TP hits)."""
         try:
             price = self._current_price(symbol)
             quantity = usdt_amount / price
-            rate = self.fee_rate(side)
+            use_futures = venue == "futures" or side == "sell"
+            rate = self.fee_rate(side, venue)
 
             min_qty = self.client.get_min_order_amount(
-                symbol, venue="futures" if side == "sell" else "spot"
+                symbol, venue="futures" if use_futures else "spot"
             )
             if quantity < min_qty:
                 logger.warning(f"Order qty {quantity:.6f} below minimum {min_qty} for {symbol}")
@@ -148,7 +156,7 @@ class OrderManager:
                 order = self._paper_order(symbol, side, quantity, fill_price)
             else:
                 order = self.client.open_futures_position(symbol, side, quantity) \
-                    if side == "sell" else \
+                    if use_futures else \
                     self.client.create_market_order(symbol, side, quantity)
                 fill_price = float(order.get("average") or order.get("price") or price)
 
@@ -188,23 +196,26 @@ class OrderManager:
     # -- closing -------------------------------------------------------- #
 
     def close_position(self, symbol: str, quantity: float, trade_id: int,
-                       side: str = "buy", fraction: float = 1.0) -> Optional[dict]:
+                       side: str = "buy", fraction: float = 1.0,
+                       venue: str = None) -> Optional[dict]:
         """
         Close (fraction<1 = partially close) a position. `side` is the side of
         the OPEN position: a long is closed with a sell, a short with a buy.
+        Pass the same venue used at open so fees and routing match.
         """
         try:
             price = self._current_price(symbol)
             close_side = "sell" if side == "buy" else "buy"
             close_qty = quantity * fraction
-            rate = self.fee_rate(side)
+            use_futures = venue == "futures" or side == "sell"
+            rate = self.fee_rate(side, venue)
 
             if self.paper_mode:
                 fill_price = self._slip(price, close_side)
                 order = self._paper_order(symbol, close_side, close_qty, fill_price)
             else:
-                order = self.client.close_futures_position(symbol, close_qty) \
-                    if side == "sell" else \
+                order = self.client.close_futures_position(symbol, close_qty, close_side) \
+                    if use_futures else \
                     self.client.create_market_order(symbol, close_side, close_qty)
                 fill_price = float(order.get("average") or order.get("price") or price)
 

@@ -128,14 +128,21 @@ class ScalpEngine(threading.Thread):
             stop = float(t.stop_loss) if t.stop_loss else None
             tp = float(t.take_profit) if t.take_profit else None
 
-            # Trailing: ratchet using the bracket's own 0.6x-edge distance.
+            # Trailing: ratchet using the bracket's own 0.6x-edge distance —
+            # but ONLY once price has crossed halfway to target. Trailing from
+            # the first uptick puts the stop inside ordinary 1m noise and
+            # scratches the trade before the edge can play out (data: 48 of
+            # 119 scalps died inside 60 seconds under first-tick trailing).
             if self.f_trailing and tp:
                 dist = self.trail_distance(entry, tp)
+                armed_at = entry + (tp - entry) * 0.5   # halfway to TP
                 if side == "buy":
                     hi = float(t.highest_price) if t.highest_price else entry
                     if price > hi:
                         self.orders.record_high_low(t.id, highest=price)
-                        cand = price - dist
+                    if price >= armed_at:
+                        # Breakeven floor first, then trail from the high.
+                        cand = max(entry, max(price, hi) - dist)
                         if stop is None or cand > stop:
                             self.orders.update_stop(t.id, cand)
                             stop = cand
@@ -143,7 +150,8 @@ class ScalpEngine(threading.Thread):
                     lo = float(t.lowest_price) if t.lowest_price else entry
                     if price < lo:
                         self.orders.record_high_low(t.id, lowest=price)
-                        cand = price + dist
+                    if price <= armed_at:
+                        cand = min(entry, min(price, lo) + dist)
                         if stop is None or cand < stop:
                             self.orders.update_stop(t.id, cand)
                             stop = cand
@@ -157,7 +165,8 @@ class ScalpEngine(threading.Thread):
 
             if exit_now:
                 result = self.orders.close_position(
-                    t.symbol, float(t.quantity), t.id, side=side, fraction=1.0
+                    t.symbol, float(t.quantity), t.id, side=side, fraction=1.0,
+                    venue="futures",
                 )
                 if result:
                     direction = 1 if side == "buy" else -1
@@ -243,6 +252,7 @@ class ScalpEngine(threading.Thread):
                     symbol=symbol, side="buy", usdt_amount=size, strategy="scalp",
                     stop_loss=signal.stop_loss, take_profit=signal.take_profit,
                     ml_confidence=ml_conf, signal_id=signal_id,
+                    venue="futures",   # scalp edge math assumes futures fees
                 )
                 if result:
                     self.notifier.trade_opened(
