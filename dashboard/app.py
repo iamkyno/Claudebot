@@ -50,7 +50,13 @@ def _paper_guard():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # no-store: the page ships inline JS that must stay in lockstep with the
+    # API — a stale cached copy renders new API payloads wrong (e.g. raw ISO
+    # timestamps instead of local time).
+    return templates.TemplateResponse(
+        "index.html", {"request": request},
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 @app.get("/api/summary")
