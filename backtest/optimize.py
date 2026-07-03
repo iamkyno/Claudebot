@@ -39,11 +39,14 @@ GRID = {
     "sl_mult":       [0.4, 0.6, 0.8],
 }
 
-# EMA-cross grid: 4 x 3 x 3 = 36 geometries (defaults: 2.25 / 4.5 / 20).
+# EMA-cross grid: 4 x 5 x 4 = 80 geometries (defaults: 2.25 / 4.5 / 20).
+# First 12-month sweep: the winner sat at the tp=6.0 boundary and every
+# top-10 row carried adx_min=25 — so the grid now extends past both
+# (tp up to 10, adx up to 30) to find where the curve actually turns.
 EMA_GRID = {
     "stop_atr": [1.5, 2.25, 3.0, 4.0],
-    "tp_atr":   [3.0, 4.5, 6.0],
-    "adx_min":  [15, 20, 25],
+    "tp_atr":   [3.0, 4.5, 6.0, 8.0, 10.0],
+    "adx_min":  [15, 20, 25, 30],
 }
 
 TIME_STOP_BARS = 15          # mirrors scalp_time_stop_min on 1m bars
