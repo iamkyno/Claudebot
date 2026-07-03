@@ -159,7 +159,24 @@ body { background: var(--bg); color: var(--t1); font-family: var(--sans); font-s
 /* two + three column grids */
 .row2 { display: grid; grid-template-columns: 1.8fr 1fr; gap: 8px; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-@media (max-width: 1100px) { .row2, .row3 { grid-template-columns: 1fr; } }
+.row-top { display: grid; grid-template-columns: 1.5fr .85fr 1fr; gap: 8px; }
+@media (max-width: 1100px) { .row2, .row3, .row-top { grid-template-columns: 1fr; } }
+
+/* ── ACTIVITY PROFILE ─────────────────────────────────────── */
+.act-wrap { padding: 12px 14px 8px; display: flex; flex-direction: column; height: calc(100% - 34px); }
+.act-bars { display: flex; align-items: flex-end; gap: 2px; flex: 1; min-height: 90px; }
+.act-bar { flex: 1; border-radius: 2px 2px 0 0; background: rgba(125,136,153,.35); min-height: 2px; position: relative; transition: height .4s ease; }
+.act-bar.peak { background: var(--g); opacity: .85; }
+.act-bar.now  { outline: 1px solid var(--am); outline-offset: 1px; }
+.act-bar:hover::after {
+  content: attr(data-tip); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+  background: var(--s3); border: 1px solid var(--b2); border-radius: 4px;
+  padding: 3px 8px; font-family: var(--mono); font-size: 10px; white-space: nowrap; z-index: 5;
+}
+.act-labels { display: flex; margin-top: 4px; }
+.act-labels span { flex: 1; text-align: center; font-family: var(--mono); font-size: 9px; color: var(--t3); }
+.act-caption { margin-top: 8px; font-size: 11px; color: var(--t2); line-height: 1.5; }
+.act-caption b { color: var(--g); font-weight: 600; }
 
 /* ── TABLES ───────────────────────────────────────────────── */
 .tbl-wrap { overflow-x: auto; }
@@ -285,11 +302,19 @@ td.c { text-align: center; }
 
 <div class="wrap">
 
-  <!-- ── Row 1: Chart + Strategy Perf ── -->
-  <div class="row2">
+  <!-- ── Row 1: Chart + Activity + Strategy Perf ── -->
+  <div class="row-top">
     <div class="box">
       <div class="box-head">Cumulative PnL</div>
       <div id="chart-wrap"><canvas id="pnlChart"></canvas></div>
+    </div>
+    <div class="box">
+      <div class="box-head ac-amber">Market Activity · Your Time</div>
+      <div class="act-wrap">
+        <div class="act-bars" id="act-bars"><div class="empty-state" style="width:100%">Collecting volume data…</div></div>
+        <div class="act-labels" id="act-labels"></div>
+        <div class="act-caption" id="act-caption"></div>
+      </div>
     </div>
     <div class="box">
       <div class="box-head ac-blue">Strategy Performance</div>
@@ -542,6 +567,47 @@ async function loadClosed() {
   </tr>`).join('');
 }
 
+async function loadActivity() {
+  const d = await fetch('/api/activity').then(r=>r.json());
+  if (!d.have_data) return;   // keep the "collecting" placeholder
+  const tzShift = -new Date().getTimezoneOffset() / 60;   // UTC -> local hours
+  const local = new Array(24);
+  for (const row of d.hours_utc) {
+    const lh = ((row.hour + tzShift) % 24 + 24) % 24;
+    local[lh] = row;
+  }
+  const vols = local.map(r => r ? r.usd_vol : 0);
+  const max = Math.max(...vols, 1);
+  // Peak hours = top third by volume.
+  const cut = [...vols].sort((a,b)=>b-a)[7] || 0;
+  const nowH = new Date().getHours();
+
+  $('act-bars').innerHTML = local.map((r, h) => {
+    const v = r ? r.usd_vol : 0;
+    const pct = Math.max((v / max) * 100, 3);
+    const cls = 'act-bar' + (v >= cut && v > 0 ? ' peak' : '') + (h === nowH ? ' now' : '');
+    const tip = `${String(h).padStart(2,'0')}:00 · $${(v/1e6).toFixed(1)}M/h` +
+                (r && r.trades ? ` · ${r.trades} trades` : '');
+    return `<div class="${cls}" style="height:${pct}%" data-tip="${tip}"></div>`;
+  }).join('');
+  $('act-labels').innerHTML = [0,3,6,9,12,15,18,21].map(h =>
+    `<span style="flex:3">${String(h).padStart(2,'0')}h</span>`).join('');
+
+  // Contiguous peak windows for the caption.
+  const peaks = local.map((r,h)=>({h, p: (r?r.usd_vol:0) >= cut && (r?r.usd_vol:0) > 0}));
+  const wins = [];
+  let start = null;
+  for (let i = 0; i <= 24; i++) {
+    const p = i < 24 && peaks[i].p;
+    if (p && start === null) start = i;
+    if (!p && start !== null) { wins.push([start, i-1]); start = null; }
+  }
+  const fmtW = ([a,b]) => a===b ? `${String(a).padStart(2,'0')}h` : `${String(a).padStart(2,'0')}–${String(b+1).padStart(2,'0')}h`;
+  $('act-caption').innerHTML = wins.length
+    ? `Busiest hours (your time): <b>${wins.map(fmtW).join(' · ')}</b> — more volume, more scalp setups. Quiet hours = fewer entries by design.`
+    : '';
+}
+
 async function loadLiq() {
   const rows = await fetch('/api/liquidations').then(r=>r.json());
   const b = $('liq-body');
@@ -556,7 +622,7 @@ async function loadLiq() {
 }
 
 async function refresh() {
-  try { await Promise.all([loadSummary(),loadChart(),loadStrategies(),loadOpen(),loadClosed(),loadLiq()]); }
+  try { await Promise.all([loadSummary(),loadChart(),loadStrategies(),loadOpen(),loadClosed(),loadLiq(),loadActivity()]); }
   catch(e) { console.warn('refresh error',e); }
 }
 

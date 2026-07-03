@@ -50,7 +50,13 @@ def _paper_guard():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # no-store: the page ships inline JS that must stay in lockstep with the
+    # API — a stale cached copy renders new API payloads wrong (e.g. raw ISO
+    # timestamps instead of local time).
+    return templates.TemplateResponse(
+        "index.html", {"request": request},
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 @app.get("/api/summary")
@@ -260,6 +266,47 @@ async def strategy_performance():
             }
             for r in rows
         ]
+    finally:
+        session.close()
+
+
+@app.get("/api/activity")
+async def market_activity():
+    """
+    Hourly market-activity profile (UTC hours; the frontend shifts to the
+    viewer's timezone). Volume proxy: BTC/USDT 1h candles from the cache —
+    scalp signal frequency tracks market volume, so the busy hours are when
+    to expect the bot to be most active.
+    """
+    session = get_session()
+    try:
+        rows = session.execute(text("""
+            SELECT EXTRACT(HOUR FROM open_time)::int AS h,
+                   AVG(volume * close_price) AS usd_vol
+            FROM ohlcv_cache
+            WHERE timeframe = '1h' AND symbol = 'BTC/USDT'
+              AND open_time > NOW() - INTERVAL '7 days'
+            GROUP BY h ORDER BY h
+        """)).fetchall()
+        vol = {int(r[0]): float(r[1] or 0) for r in rows}
+
+        # The bot's own entries per UTC hour (all strategies, last 14 days).
+        trows = session.execute(text("""
+            SELECT EXTRACT(HOUR FROM entry_time)::int AS h, COUNT(*)
+            FROM trades
+            WHERE entry_time > NOW() - INTERVAL '14 days'
+            GROUP BY h
+        """)).fetchall()
+        trades_h = {int(r[0]): int(r[1]) for r in trows}
+
+        return {
+            "hours_utc": [
+                {"hour": h, "usd_vol": round(vol.get(h, 0), 0),
+                 "trades": trades_h.get(h, 0)}
+                for h in range(24)
+            ],
+            "have_data": len(vol) >= 12,
+        }
     finally:
         session.close()
 
