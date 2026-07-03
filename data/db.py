@@ -24,6 +24,16 @@ _MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN IF NOT EXISTS tp1_filled SMALLINT DEFAULT 0",
     # Allow shorts: relax the side CHECK to nothing (validated in code instead).
     "ALTER TABLE trades DROP CONSTRAINT IF EXISTS trades_side_check",
+    # One timezone everywhere: Python writes UTC (datetime.utcnow), but plain
+    # DEFAULT NOW() stamps PG-server-local time — mixed clocks in one schema.
+    # The dashboard treats all timestamps as UTC and renders them in the
+    # viewer's local timezone, so defaults must be UTC too.
+    "ALTER TABLE signals ALTER COLUMN created_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
+    "ALTER TABLE trades ALTER COLUMN created_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
+    "ALTER TABLE ml_models ALTER COLUMN trained_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
+    "ALTER TABLE bot_state ALTER COLUMN snapshot_time SET DEFAULT (NOW() AT TIME ZONE 'utc')",
+    "ALTER TABLE liquidation_events ALTER COLUMN created_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
+    "ALTER TABLE ohlcv_cache ALTER COLUMN created_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
 ]
 
 

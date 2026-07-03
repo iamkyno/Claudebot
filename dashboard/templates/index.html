@@ -384,6 +384,9 @@ const spnl = n => n == null ? '--' : (n>=0?'+$':'-$')+f(Math.abs(n),2);
 const cls = n => n == null ? 'dim' : n >= 0 ? 'g' : 'r-c';
 const sym = s => { const [b,q] = s.split('/'); return `<span class="sym-cell"><b>${b}</b><span>/${q||'USDT'}</span></span>`; };
 const dur = m => !m ? '--' : m<60 ? m+'m' : m<1440 ? Math.floor(m/60)+'h'+(m%60?m%60+'m':'') : Math.floor(m/1440)+'d'+(Math.floor((m%1440)/60)?Math.floor((m%1440)/60)+'h':'');
+// UTC ISO from the API → the viewer's local timezone (matches system clock).
+const ts = iso => !iso ? '--' : new Date(iso).toLocaleString([], {month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
+const tsTime = iso => !iso ? '--' : new Date(iso).toLocaleTimeString([], {hour12:false});
 const STAG = {rsi_bb:'RSI·BB',ema_cross:'EMA',funding_rate:'FUND',liquidation_cascade:'LIQ',grid:'GRID',pair_trading:'PAIR',scalp:'SCALP'};
 const stag = s => `<span class="stag st-${s}">${STAG[s]||s}</span>`;
 const sideChip = s => `<span class="${s==='sell'?'side-short':'side-long'}" style="font-size:9px;font-weight:700;letter-spacing:.04em">${s==='sell'?'SHORT':'LONG'}</span>`;
@@ -455,7 +458,7 @@ async function loadSummary() {
   if (d.ml.version) {
     mlp.className = 'pill p-ml';
     mlp.textContent = `ML v${d.ml.version} · ${d.ml.accuracy}% acc`;
-    mlp.title = `F1 ${d.ml.f1} · ${d.ml.samples} samples · ${d.ml.trained_at}`;
+    mlp.title = `F1 ${d.ml.f1} · ${d.ml.samples} samples · trained ${ts(d.ml.trained_at)}`;
   } else {
     mlp.className = 'pill p-ml warn';
     mlp.textContent = 'ML · collecting data';
@@ -517,7 +520,7 @@ async function loadOpen() {
     <td class="r">${t.ml_confidence!=null
       ? `<div class="conf-wrap" style="justify-content:flex-end"><span class="num dim">${t.ml_confidence}%</span><div class="conf-bar"><div class="conf-fill" style="width:${t.ml_confidence}%"></div></div></div>`
       : '<span class="dim">--</span>'}</td>
-    <td class="r dim">${t.entry_time||'--'}</td>
+    <td class="r dim">${ts(t.entry_time)}</td>
   </tr>`).join('');
 }
 
@@ -535,7 +538,7 @@ async function loadClosed() {
     <td class="r num ${cls(t.pnl)}" style="font-weight:600">${spnl(t.pnl)}</td>
     <td class="r num ${cls(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
     <td class="r dim">${dur(t.duration_minutes)}</td>
-    <td class="r dim">${t.exit_time||'--'}</td>
+    <td class="r dim">${ts(t.exit_time)}</td>
   </tr>`).join('');
 }
 
@@ -548,7 +551,7 @@ async function loadLiq() {
     <td class="${r.side==='long'?'liq-long':'liq-short'}" style="font-weight:600">${r.side.toUpperCase()}</td>
     <td class="r num">$${Number(r.usd_value).toLocaleString('en-US',{maximumFractionDigits:0})}</td>
     <td class="r num">$${fp(r.price)}</td>
-    <td class="r dim">${r.event_time||'--'}</td>
+    <td class="r dim">${tsTime(r.event_time)}</td>
   </tr>`).join('');
 }
 

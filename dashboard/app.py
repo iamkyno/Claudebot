@@ -128,7 +128,7 @@ async def summary():
                 "accuracy":  round(float(ml_row[1]) * 100, 1) if ml_row and ml_row[1] else None,
                 "f1":        round(float(ml_row[2]), 3) if ml_row and ml_row[2] else None,
                 "samples":   int(ml_row[3]) if ml_row and ml_row[3] else 0,
-                "trained_at": ml_row[4].strftime("%Y-%m-%d %H:%M") if ml_row and ml_row[4] else None,
+                "trained_at": ml_row[4].isoformat() + "Z" if ml_row and ml_row[4] else None,
             },
         }
     finally:
@@ -174,7 +174,9 @@ async def open_trades():
                 "stop_loss":     float(r[6]) if r[6] else None,
                 "take_profit":   float(r[7]) if r[7] else None,
                 "ml_confidence": round(float(r[8]) * 100, 1) if r[8] else None,
-                "entry_time":    r[9].strftime("%Y-%m-%d %H:%M") if r[9] else None,
+                # UTC ISO with Z — the browser renders it in the viewer's
+                # local timezone, so dashboard times match the system clock.
+                "entry_time":    r[9].isoformat() + "Z" if r[9] else None,
             })
         return out
     finally:
@@ -203,8 +205,8 @@ async def closed_trades(limit: int = 50):
                 "pnl":              round(float(r[6]), 4) if r[6] else None,
                 "pnl_pct":          round(float(r[7]) * 100, 2) if r[7] else None,
                 "duration_minutes": int(r[8]) if r[8] else None,
-                "entry_time":       r[9].strftime("%Y-%m-%d %H:%M") if r[9] else None,
-                "exit_time":        r[10].strftime("%Y-%m-%d %H:%M") if r[10] else None,
+                "entry_time":       r[9].isoformat() + "Z" if r[9] else None,
+                "exit_time":        r[10].isoformat() + "Z" if r[10] else None,
             }
             for r in rows
         ]
@@ -279,7 +281,7 @@ async def recent_liquidations(limit: int = 20):
                 "quantity":   float(r[2]),
                 "price":      float(r[3]),
                 "usd_value":  float(r[4]),
-                "event_time": r[5].strftime("%H:%M:%S") if r[5] else None,
+                "event_time": r[5].isoformat() + "Z" if r[5] else None,
                 "traded_on":  bool(r[6]),
             }
             for r in rows
