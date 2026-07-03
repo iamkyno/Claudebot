@@ -27,10 +27,11 @@ class ScalpStrategy(BaseStrategy):
       3. Momentum burst  — volume spike + price thrust we ride for a few
                            candles (continuation).
 
-    THE KEY DISCIPLINE: every take-profit must clear ~2x the round-trip fee.
-    Scalping dies on fees, so any setup whose realistic move can't beat costs
-    is rejected outright. Targets and stops are expressed in basis points off
-    entry, volatility-scaled, with a hard time-stop so dead trades are cut.
+    THE KEY DISCIPLINE: every setup must offer ~3x the round-trip fee, and
+    the bracket is asymmetric (TP 1.6x edge vs SL 0.6x edge) so the payoff
+    profile only needs a ~31% hit rate after costs. Scalping dies on fees;
+    any setup whose realistic move can't beat costs is rejected outright.
+    A hard time-stop cuts dead trades.
     """
 
     def __init__(self, config: dict, fee_rate: float = 0.0005,
@@ -40,8 +41,10 @@ class ScalpStrategy(BaseStrategy):
         self.timeframe = timeframe
         self.fee_rate = fee_rate                 # one side (taker)
         self.round_trip = fee_rate * 2           # entry + exit
-        # A target must clear at least this net edge (2x round-trip = comfort).
-        self.min_edge = self.round_trip * 2
+        # A setup must offer at least 3x the round-trip cost. Live data showed
+        # 2x left targets barely above fees: wins netted ~ the same as losses
+        # (+$1.23 vs -$1.28), needing a 51% hit rate the setups don't have.
+        self.min_edge = self.round_trip * 3
         self.time_stop_min = config.get("scalp_time_stop_min", 15)
 
     # ------------------------------------------------------------------ #
@@ -100,8 +103,13 @@ class ScalpStrategy(BaseStrategy):
         if kind is None:
             return None
 
-        # Fee-aware bracket. TP clears costs; SL tighter for >1:1 reward:risk.
-        take_profit = round(price * (1 + edge), 8)
+        # Fee-aware bracket, asymmetric by design: TP at 1.6x edge, SL at
+        # 0.6x edge -> ~2.7:1 gross reward:risk, breakeven near a 31% hit
+        # rate after costs. (The symmetric 1.0x TP needed 51% and delivered
+        # 38% — structurally unprofitable no matter how good the entries.)
+        # The sniper trail arms at halfway to TP, so runners that stall
+        # still bank most of the move instead of round-tripping to the stop.
+        take_profit = round(price * (1 + edge * 1.6), 8)
         stop_loss = round(price * (1 - edge * 0.6), 8)
 
         features = {
