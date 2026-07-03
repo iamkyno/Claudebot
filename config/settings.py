@@ -49,6 +49,25 @@ def get_config() -> dict:
     return _load_yaml(_CONFIG_PATH)
 
 
+_TUNING_PATH = _ROOT / "config" / "tuning.json"
+
+
+def get_tuning() -> dict:
+    """
+    Optimizer-derived parameters (config/tuning.json), written by
+    `python -m backtest.optimize --apply`. Anything here overrides the
+    hand-set defaults — the bot tunes itself from historical evidence.
+    Absent or unreadable file -> {} (defaults apply).
+    """
+    try:
+        if _TUNING_PATH.exists():
+            import json
+            return json.loads(_TUNING_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
+    return {}
+
+
 def get_secrets() -> dict:
     """Binance + Telegram credentials, env-vars first, then yaml, then empty."""
     y = _load_yaml(_SECRETS_PATH)

@@ -41,10 +41,15 @@ class ScalpStrategy(BaseStrategy):
         self.timeframe = timeframe
         self.fee_rate = fee_rate                 # one side (taker)
         self.round_trip = fee_rate * 2           # entry + exit
-        # A setup must offer at least 3x the round-trip cost. Live data showed
-        # 2x left targets barely above fees: wins netted ~ the same as losses
-        # (+$1.23 vs -$1.28), needing a 51% hit rate the setups don't have.
-        self.min_edge = self.round_trip * 3
+        # Bracket geometry — tunable, and overridden by config/tuning.json
+        # when the optimizer (python -m backtest.optimize --apply) has found
+        # better values on months of historical data. Defaults come from the
+        # live post-fix analysis: symmetric payoff needed 51% WR vs 38%
+        # delivered, so the shipped bracket is asymmetric.
+        self.min_edge_mult = float(config.get("min_edge_mult", 3.0))
+        self.tp_mult = float(config.get("tp_mult", 1.6))
+        self.sl_mult = float(config.get("sl_mult", 0.6))
+        self.min_edge = self.round_trip * self.min_edge_mult
         self.time_stop_min = config.get("scalp_time_stop_min", 15)
 
     # ------------------------------------------------------------------ #
@@ -103,14 +108,11 @@ class ScalpStrategy(BaseStrategy):
         if kind is None:
             return None
 
-        # Fee-aware bracket, asymmetric by design: TP at 1.6x edge, SL at
-        # 0.6x edge -> ~2.7:1 gross reward:risk, breakeven near a 31% hit
-        # rate after costs. (The symmetric 1.0x TP needed 51% and delivered
-        # 38% — structurally unprofitable no matter how good the entries.)
-        # The sniper trail arms at halfway to TP, so runners that stall
-        # still bank most of the move instead of round-tripping to the stop.
-        take_profit = round(price * (1 + edge * 1.6), 8)
-        stop_loss = round(price * (1 - edge * 0.6), 8)
+        # Fee-aware bracket, asymmetric by design (tp_mult > sl_mult). The
+        # sniper trail arms at halfway to TP, so runners that stall still
+        # bank most of the move instead of round-tripping to the stop.
+        take_profit = round(price * (1 + edge * self.tp_mult), 8)
+        stop_loss = round(price * (1 - edge * self.sl_mult), 8)
 
         features = {
             "rsi": rsi,

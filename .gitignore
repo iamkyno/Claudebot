@@ -1,5 +1,6 @@
 config/secrets.yaml
 ml/models/*.pkl
+backtest/history/
 *.log
 __pycache__/
 *.pyc

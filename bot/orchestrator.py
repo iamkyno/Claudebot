@@ -6,7 +6,7 @@ from datetime import date, datetime
 import pandas as pd
 from sqlalchemy import text
 
-from config.settings import get_config, get_secrets
+from config.settings import get_config, get_secrets, get_tuning
 from data.db import get_session
 from data.fetcher import DataFetcher
 from data.features import compute_features
@@ -93,13 +93,18 @@ class Orchestrator:
         # Fee-aware scalper — fast in/out on a low timeframe, runs separately
         # from the swing strategies above (its own timeframe + exit cadence).
         scalp_cfg = cfg.get("scalp", {})
+        # Optimizer-derived parameters override hand-set defaults — written
+        # by `python -m backtest.optimize --apply` from historical evidence.
+        scalp_tuning = get_tuning().get("scalp", {})
+        if scalp_tuning:
+            logger.info(f"Applying optimizer tuning to scalp: {scalp_tuning}")
         self.scalp_enabled = scalp_cfg.get("enabled", True)
         self.scalp_entry_tf = scalp_cfg.get("entry_timeframe", "1m")
         self.scalp_trend_tf = scalp_cfg.get("trend_timeframe", "5m")
         self.scalp_max_symbols = scalp_cfg.get("max_symbols", 8)
         self.scalper = (
             ScalpStrategy(
-                {**risk_cfg, **scalp_cfg},
+                {**risk_cfg, **scalp_cfg, **scalp_tuning},
                 fee_rate=scalp_cfg.get("taker_fee_rate", 0.0005),
                 timeframe=self.scalp_entry_tf,
             )

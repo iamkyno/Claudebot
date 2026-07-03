@@ -28,7 +28,9 @@ risk:
 # paper results mean what they say. Live fills also net these out.
 fees:
   spot_taker: 0.001               # 0.10% per side (Binance spot, no BNB discount)
+  spot_maker: 0.001               # spot maker == taker at base tier
   futures_taker: 0.0005           # 0.05% per side (USDT-M futures)
+  futures_maker: 0.0002           # 0.02% per side — post-only entries pay this
   slippage_bps: 2                 # est. market-order slippage per side (basis points)
 
 # Futures settings used when shorts go live (paper shorts are fully simulated).
@@ -78,6 +80,9 @@ scalp:
   sniper_mode: true          # dedicated fast loop, independent of the 60s tick
   exit_check_seconds: 3      # bracket/trailing checked off the live WS price
   entry_scan_seconds: 20     # setup scans per fresh 1m data (3x per candle)
+  entry_order: maker         # post-only entries: futures maker 0.02% vs taker 0.05%
+                             # (exits stay market/taker — speed matters on the way out)
+  maker_timeout_seconds: 10  # cancel an unfilled post-only entry after this long
 
 bot:
   loop_interval_seconds: 60

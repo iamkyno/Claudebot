@@ -19,7 +19,9 @@ class OrderManager:
         # Cost model: fees + slippage are applied to every paper fill and every
         # PnL number so results are net, not gross-optimistic.
         self.spot_fee = fees_cfg.get("spot_taker", 0.001)
+        self.spot_maker = fees_cfg.get("spot_maker", 0.001)
         self.futures_fee = fees_cfg.get("futures_taker", 0.0005)
+        self.futures_maker = fees_cfg.get("futures_maker", 0.0002)
         self.slippage = fees_cfg.get("slippage_bps", 2) / 10_000.0
         self._paper_counter = 1
         # Virtual wallet for paper trading so the bot actually trades with no keys.
@@ -33,12 +35,14 @@ class OrderManager:
 
     # -- cost model ------------------------------------------------------ #
 
-    def fee_rate(self, side: str, venue: str = None) -> float:
+    def fee_rate(self, side: str, venue: str = None, liquidity: str = "taker") -> float:
         """Futures venue (all shorts + strategies that request it, e.g. the
-        scalper) pays futures taker; everything else pays spot taker."""
-        if venue == "futures" or side == "sell":
-            return self.futures_fee
-        return self.spot_fee
+        scalper) pays futures rates; everything else spot. Post-only entries
+        pay maker (0.02% futures) instead of taker (0.05%)."""
+        futures = venue == "futures" or side == "sell"
+        if liquidity == "maker":
+            return self.futures_maker if futures else self.spot_maker
+        return self.futures_fee if futures else self.spot_fee
 
     def _slip(self, price: float, order_side: str) -> float:
         """Market orders cross the spread: buys fill high, sells fill low."""
@@ -131,17 +135,21 @@ class OrderManager:
         self, symbol: str, side: str, usdt_amount: float, strategy: str,
         stop_loss: float, take_profit: float,
         ml_confidence: float = None, signal_id: int = None,
-        venue: str = None,
+        venue: str = None, order_type: str = "taker",
+        maker_timeout: float = 10.0,
     ) -> Optional[dict]:
         """Open a long (side='buy') or short (side='sell') position.
         venue='futures' routes to futures and pays futures fees — the scalper
         uses this: its edge math assumes futures costs (spot fees exceed its
-        typical target and would guarantee a net loss even on TP hits)."""
+        typical target and would guarantee a net loss even on TP hits).
+        order_type='maker' rests a post-only limit at the current price:
+        cheaper fee, no spread crossed — live entries that don't fill within
+        maker_timeout are cancelled and the trade is skipped."""
         try:
             price = self._current_price(symbol)
             quantity = usdt_amount / price
             use_futures = venue == "futures" or side == "sell"
-            rate = self.fee_rate(side, venue)
+            rate = self.fee_rate(side, venue, liquidity=order_type)
 
             min_qty = self.client.get_min_order_amount(
                 symbol, venue="futures" if use_futures else "spot"
@@ -151,9 +159,32 @@ class OrderManager:
                 return None
 
             if self.paper_mode:
-                # Opening a short is a SELL order (fills low); a long BUYs (fills high).
-                fill_price = self._slip(price, side)
+                if order_type == "maker":
+                    # A resting order doesn't cross the spread: fill at the
+                    # quoted price, maker fee. (Slightly optimistic — a real
+                    # resting bid can miss fast moves; live mode handles that
+                    # by cancelling unfilled entries.)
+                    fill_price = price
+                else:
+                    # Market order: buys fill high, sells fill low.
+                    fill_price = self._slip(price, side)
                 order = self._paper_order(symbol, side, quantity, fill_price)
+            elif order_type == "maker":
+                o = self.client.place_post_only(
+                    symbol, side, quantity, price,
+                    venue="futures" if use_futures else "spot",
+                )
+                filled = self.client.wait_fill(
+                    o["id"], symbol,
+                    venue="futures" if use_futures else "spot",
+                    timeout=maker_timeout,
+                )
+                if not filled:
+                    logger.info(f"Maker entry unfilled for {symbol} within "
+                                f"{maker_timeout:.0f}s — skipped")
+                    return None
+                order = filled
+                fill_price = float(filled.get("average") or filled.get("price") or price)
             else:
                 order = self.client.open_futures_position(symbol, side, quantity) \
                     if use_futures else \

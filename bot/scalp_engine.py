@@ -46,6 +46,11 @@ class ScalpEngine(threading.Thread):
         self.exit_every = scalp_cfg.get("exit_check_seconds", 3)
         self.scan_every = scalp_cfg.get("entry_scan_seconds", 20)
         self.time_stop_min = scalp_cfg.get("scalp_time_stop_min", 15)
+        # Post-only entries pay maker (0.02% futures) instead of taker (0.05%)
+        # — on a strategy whose whole margin is a few bps, this is the single
+        # biggest cost lever. Exits stay market orders: speed over fee.
+        self.entry_order = scalp_cfg.get("entry_order", "maker")
+        self.maker_timeout = scalp_cfg.get("maker_timeout_seconds", 10)
         self.tv_veto = cfg.get("bot", {}).get("tradingview_veto_score", -0.5)
         self.f_sharpe_size = feat.get("sharpe_sizing", True)
         self.f_trailing = feat.get("trailing_stops", True)
@@ -253,6 +258,7 @@ class ScalpEngine(threading.Thread):
                     stop_loss=signal.stop_loss, take_profit=signal.take_profit,
                     ml_confidence=ml_conf, signal_id=signal_id,
                     venue="futures",   # scalp edge math assumes futures fees
+                    order_type=self.entry_order, maker_timeout=self.maker_timeout,
                 )
                 if result:
                     self.notifier.trade_opened(

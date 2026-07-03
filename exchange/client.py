@@ -161,6 +161,51 @@ class BinanceClient:
         return self.futures.create_market_order(self._perp(symbol), side, amount)
 
     @retry()
+    def place_post_only(self, symbol: str, side: str, amount: float,
+                        price: float, venue: str = "futures"):
+        """Rest a maker-only limit order at `price`. GTX (futures) and
+        LIMIT_MAKER (spot) are rejected by Binance if they would cross the
+        book and take — guaranteeing the maker fee when they fill."""
+        if not self.has_keys:
+            raise RuntimeError("Post-only order requires API keys")
+        if venue == "futures":
+            self.prepare_futures_symbol(
+                symbol,
+                leverage=self.config.get("futures", {}).get("leverage", 2),
+                margin_mode=self.config.get("futures", {}).get("margin_mode", "isolated"),
+            )
+            return self.futures.create_limit_order(
+                self._perp(symbol), side, amount, price,
+                params={"timeInForce": "GTX"},
+            )
+        return self.spot.create_order(symbol, "LIMIT_MAKER", side, amount, price)
+
+    def wait_fill(self, order_id: str, symbol: str, venue: str = "futures",
+                  timeout: float = 10.0):
+        """Poll an order until filled or timeout; cancel on timeout.
+        Returns the filled order dict, or None if it never filled."""
+        ex = self.futures if venue == "futures" else self.spot
+        sym = self._perp(symbol) if venue == "futures" else symbol
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                o = ex.fetch_order(order_id, sym)
+            except Exception:
+                time.sleep(0.5)
+                continue
+            status = o.get("status")
+            if status == "closed":
+                return o
+            if status in ("canceled", "rejected", "expired"):
+                return None
+            time.sleep(0.5)
+        try:
+            ex.cancel_order(order_id, sym)
+        except Exception:
+            pass
+        return None
+
+    @retry()
     def close_futures_position(self, symbol: str, amount: float,
                                close_side: str = "buy"):
         """Close a futures position with reduceOnly so the order can only
