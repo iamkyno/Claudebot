@@ -270,6 +270,29 @@ async def strategy_performance():
         session.close()
 
 
+@app.get("/api/health")
+async def health():
+    """Liveness for the dashboard indicator (and anything else that watches)."""
+    from datetime import datetime
+    orch = _BOT["orchestrator"]
+    if orch is None:
+        return {"ok": False, "reason": "bot not connected", "last_tick": None,
+                "price_stream_live": False}
+    last = getattr(orch, "_last_tick_at", None)
+    age = (datetime.utcnow() - last).total_seconds() if last else None
+    interval = orch.cfg["bot"].get("loop_interval_seconds", 60)
+    stalled = age is None or age > interval * 3
+    ws_live = bool(orch.price_stream and orch.price_stream.is_live(max_staleness=30))
+    return {
+        "ok": not stalled,
+        "reason": "tick stalled" if stalled else None,
+        "last_tick": last.isoformat() + "Z" if last else None,
+        "tick_age_seconds": round(age, 1) if age is not None else None,
+        "price_stream_live": ws_live,
+        "mode": "PAPER" if orch.paper_mode else "LIVE",
+    }
+
+
 @app.get("/api/pnl/daily")
 async def pnl_daily(days: int = 84):
     """Net PnL per UTC day for the calendar heatmap (last `days` days)."""

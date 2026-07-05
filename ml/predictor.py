@@ -18,6 +18,7 @@ FEATURE_ORDER = [
     "ema_9", "ema_21", "ema_50", "atr", "volume_ratio",
     "price_change_1h", "price_change_4h", "price_change_24h",
     "funding_rate", "orderbook_imbalance", "tv_recommendation",
+    "adx", "bb_width", "oi_change", "taker_flow",
 ]
 
 
@@ -122,12 +123,14 @@ class SignalPredictor:
                      rsi, macd, macd_signal, bb_upper, bb_lower, bb_position,
                      ema_9, ema_21, ema_50, atr, volume_ratio,
                      price_change_1h, price_change_4h, price_change_24h,
-                     funding_rate, orderbook_imbalance, tv_recommendation)
+                     funding_rate, orderbook_imbalance, tv_recommendation,
+                     adx, bb_width, oi_change, taker_flow)
                 VALUES
                     (:symbol, :strategy, :signal_type, :confidence,
                      :rsi, :macd, :macd_signal, :bb_upper, :bb_lower, :bb_position,
                      :ema_9, :ema_21, :ema_50, :atr, :volume_ratio,
-                     :pc1h, :pc4h, :pc24h, :funding_rate, :ob_imbalance, :tv)
+                     :pc1h, :pc4h, :pc24h, :funding_rate, :ob_imbalance, :tv,
+                     :adx, :bb_width, :oi_change, :taker_flow)
                 RETURNING id
             """), {
                 "symbol": symbol, "strategy": strategy,
@@ -142,6 +145,8 @@ class SignalPredictor:
                 "funding_rate": f.get("funding_rate"),
                 "ob_imbalance": f.get("orderbook_imbalance"),
                 "tv": f.get("tv_recommendation"),
+                "adx": f.get("adx"), "bb_width": f.get("bb_width"),
+                "oi_change": f.get("oi_change"), "taker_flow": f.get("taker_flow"),
             })
             signal_id = result.scalar()
             session.commit()

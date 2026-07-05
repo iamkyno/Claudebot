@@ -1,5 +1,6 @@
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 
 # Windows cp1252 console can't print arrows/emoji — switch to UTF-8 first.
 if hasattr(sys.stdout, "reconfigure"):
@@ -10,7 +11,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("claudebot.log", encoding="utf-8"),
+        # Rotate at 10MB, keep 5 files — an always-on bot must not grow an
+        # unbounded log (especially inside a synced folder).
+        RotatingFileHandler("claudebot.log", maxBytes=10_000_000,
+                            backupCount=5, encoding="utf-8"),
     ],
 )
 

@@ -13,13 +13,18 @@ class GridStrategy(BaseStrategy):
     Automatically killed in trending markets (ADX > 35).
     """
 
-    _ADX_KILL = 35
     _LEVELS = 12
 
     def __init__(self, config: dict):
         super().__init__(config)
         self.name = "grid"
         self._grids: dict = {}
+        # Tunable geometry — overridden by config/tuning.json when the
+        # optimizer has found better values on historical data.
+        self.spacing_mult = float(config.get("spacing_mult", 0.5))   # x ATR/price
+        self.stop_mult = float(config.get("stop_mult", 4.0))         # x spacing
+        self.tp_mult = float(config.get("tp_mult", 1.0))             # x spacing
+        self.adx_kill = float(config.get("adx_kill", 35))
 
     def generate_signal(self, symbol: str, df: pd.DataFrame, **kwargs) -> Optional[Signal]:
         if len(df) < 50:
@@ -30,11 +35,11 @@ class GridStrategy(BaseStrategy):
         adx = float(last["adx"]) if pd.notna(last.get("adx")) else 0.0
         atr = float(last["atr"]) if pd.notna(last.get("atr")) else price * 0.01
 
-        if adx > self._ADX_KILL:
+        if adx > self.adx_kill:
             self._grids.pop(symbol, None)
             return None
 
-        spacing = self._calc_spacing(price, atr)
+        spacing = self._calc_spacing(price, atr, self.spacing_mult)
         grid = self._grids.get(symbol)
 
         # Rebuild grid if price has drifted more than 3× spacing from center
@@ -58,8 +63,8 @@ class GridStrategy(BaseStrategy):
                 return Signal(
                     symbol=symbol, strategy=self.name, signal_type="buy",
                     confidence=0.55,
-                    stop_loss=round(price * (1 - spacing * 4), 8),
-                    take_profit=round(nearest * (1 + spacing), 8),
+                    stop_loss=round(price * (1 - spacing * self.stop_mult), 8),
+                    take_profit=round(nearest * (1 + spacing * self.tp_mult), 8),
                     features=features,
                 )
         return None
@@ -69,7 +74,7 @@ class GridStrategy(BaseStrategy):
         price = float(last["close"])
         adx = float(last["adx"]) if pd.notna(last.get("adx")) else 0.0
 
-        if adx > self._ADX_KILL:
+        if adx > self.adx_kill:
             self._grids.pop(symbol, None)
             return True
         if trade.get("stop_loss") and price <= float(trade["stop_loss"]):
@@ -81,8 +86,8 @@ class GridStrategy(BaseStrategy):
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _calc_spacing(price: float, atr: float) -> float:
-        raw = (atr / price) * 0.5
+    def _calc_spacing(price: float, atr: float, mult: float = 0.5) -> float:
+        raw = (atr / price) * mult
         return max(0.002, min(raw, 0.015))  # clamp 0.2% – 1.5%
 
     def _make_grid(self, symbol: str, center: float, spacing: float) -> dict:

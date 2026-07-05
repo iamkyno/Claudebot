@@ -39,6 +39,14 @@ GRID = {
     "sl_mult":       [0.4, 0.6, 0.8],
 }
 
+# Grid-strategy grid: 3 x 3 x 3 x 3 = 81 geometries (defaults: .5/4/1/35).
+GRID_GRID = {
+    "spacing_mult": [0.3, 0.5, 0.8],
+    "stop_mult":    [3.0, 4.0, 6.0],
+    "tp_mult":      [1.0, 1.5, 2.0],
+    "adx_kill":     [25, 35, 45],
+}
+
 # EMA-cross grid: 4 x 5 x 4 = 80 geometries (defaults: 2.25 / 4.5 / 20).
 # First 12-month sweep: the winner sat at the tp=6.0 boundary and every
 # top-10 row carried adx_min=25 — so the grid now extends past both
@@ -304,6 +312,83 @@ def sweep_ema(frames: dict[str, pd.DataFrame]) -> list[dict]:
     return results
 
 
+# ---------------------------------------------------------------------- #
+# Grid-strategy sweep (1h) — mirrors strategies/grid.py: ATR-derived level
+# spacing, buy dips onto grid levels in ranging markets, TP one spacing up,
+# grid killed when ADX says the market is trending.
+
+def grid_simulate(F: dict, spacing_mult: float, stop_mult: float,
+                  tp_mult: float, adx_kill: float) -> np.ndarray:
+    """Reuses ema_precompute's features (atr, adx, ohlc)."""
+    o, h, l, c = F["open"], F["high"], F["low"], F["close"]
+    atr, adx = F["atr"], F["adx"]
+    n = F["n"]
+    cost = 2 * (SPOT_TAKER + SLIP)
+
+    rets = []
+    center, filled, busy_until = None, set(), -1
+    for i in range(50, n - 1):
+        if adx[i] > adx_kill:
+            center, filled = None, set()
+            continue
+        price = c[i]
+        spacing = min(max(atr[i] / price * spacing_mult, 0.002), 0.015)
+        if center is None or abs(price - center) / price > spacing * 3:
+            center, filled = price, set()
+            continue
+        # nearest unfilled level below price
+        k = int(np.floor(np.log(price / center) / np.log(1 + spacing)))
+        level = center * (1 + spacing) ** k
+        if level >= price or k in filled or not (-6 <= k <= 6):
+            continue
+        if abs(price - level) / price >= spacing * 0.5:
+            continue
+        if i <= busy_until:
+            continue
+        filled.add(k)
+
+        entry = o[i + 1] * (1 + SLIP)
+        stop = entry * (1 - spacing * stop_mult)
+        tp = level * (1 + spacing * tp_mult)
+        exit_px, j = None, i + 1
+        last = min(i + 1 + 500, n - 1)
+        for j in range(i + 1, last + 1):
+            if adx[j] > adx_kill:
+                exit_px = c[j]
+                break
+            if l[j] <= stop:
+                exit_px = stop
+                break
+            if h[j] >= tp:
+                exit_px = tp
+                break
+        if exit_px is None:
+            exit_px = c[last]
+        rets.append((exit_px - entry) / entry - cost)
+        busy_until = j
+    return np.array(rets)
+
+
+def sweep_grid(frames: dict[str, pd.DataFrame]) -> list[dict]:
+    pre = {sym: ema_precompute(df) for sym, df in frames.items()}
+    results = []
+    for sp, st, tp, ak in itertools.product(*GRID_GRID.values()):
+        all_rets, fold_nets = [], [0.0, 0.0, 0.0]
+        for F in pre.values():
+            rets = grid_simulate(F, sp, st, tp, ak)
+            all_rets.append(rets)
+            if len(rets):
+                thirds = np.array_split(rets, 3)
+                for fi in range(3):
+                    fold_nets[fi] += float(thirds[fi].sum()) if len(thirds[fi]) else 0.0
+        rets = np.concatenate(all_rets) if all_rets else np.array([])
+        s = score(rets)
+        s.update({"spacing_mult": sp, "stop_mult": st, "tp_mult": tp, "adx_kill": ak,
+                  "folds_positive": sum(1 for f in fold_nets if f > 0)})
+        results.append(s)
+    return results
+
+
 def pick_best(results: list[dict], min_trades: int = 60) -> dict | None:
     """Robust winner: enough trades, profitable overall, and profitable in at
     least 2 of 3 walk-forward folds. Rank by net, tie-break by profit factor."""
@@ -340,7 +425,7 @@ def _load_frames(symbols: list[str], months: int, timeframe: str, market: str) -
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s")
     ap = argparse.ArgumentParser(description="Strategy parameter optimizer")
-    ap.add_argument("--strategy", choices=["scalp", "ema_cross", "all"], default="all")
+    ap.add_argument("--strategy", choices=["scalp", "ema_cross", "grid", "all"], default="all")
     ap.add_argument("--symbols", default="BTC/USDT,ETH/USDT",
                     help="symbols for the scalp (1m) sweep")
     ap.add_argument("--swing-symbols", default="BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT",
@@ -396,6 +481,26 @@ def main():
                       "keeping current params.")
         else:
             print("EMA_CROSS: no 1h history downloaded — skipped.")
+
+    # -- grid sweep (1h, same frames as ema) -------------------------------- #
+    if args.strategy in ("grid", "all"):
+        syms = [s.strip() for s in args.swing_symbols.split(",") if s.strip()]
+        frames = _load_frames(syms, args.swing_months, "1h", "spot")
+        if frames:
+            results = sweep_grid(frames)
+            _print_table(results, ["spacing_mult", "stop_mult", "tp_mult", "adx_kill"],
+                         f"GRID — top 10 of {len(results)} geometries "
+                         f"({args.swing_months}mo 1h, {len(frames)} symbols)")
+            best = pick_best(results, min_trades=40)
+            if best:
+                winners["grid"] = {k: best[k] for k in
+                                   ("spacing_mult", "stop_mult", "tp_mult", "adx_kill")}
+                meta["grid"] = {k: best[k] for k in ("n", "wr", "net_bps", "pf", "folds_positive")}
+                print(f"GRID WINNER: {winners['grid']} -> {meta['grid']}")
+            else:
+                print("GRID: no geometry survived the robustness bar — keeping current params.")
+        else:
+            print("GRID: no 1h history downloaded — skipped.")
 
     if not winners:
         print("\nNothing to apply.")

@@ -62,6 +62,7 @@ class EMACrossStrategy(BaseStrategy):
             "ema_9": float(last[fast_col]), "ema_21": float(last[slow_col]),
             "ema_50": float(last["ema_50"]) if pd.notna(last.get("ema_50")) else None,
             "adx": adx, "atr": atr,
+            "bb_width": float(last["bb_width"]) if pd.notna(last.get("bb_width")) else None,
             "volume_ratio": float(last["volume_ratio"]) if pd.notna(last.get("volume_ratio")) else None,
             "macd": float(last["macd"]) if pd.notna(last.get("macd")) else None,
         }

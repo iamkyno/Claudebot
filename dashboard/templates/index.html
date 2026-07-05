@@ -69,6 +69,8 @@ body {
 .p-ml { background: transparent; color: var(--ink2); border-color: var(--b2); }
 .p-ml.warn { color: var(--amber2); }
 .led { width: 6px; height: 6px; border-radius: 50%; background: var(--g); animation: blink 2s infinite; box-shadow: 0 0 6px var(--g); }
+.led.stale { background: var(--r); box-shadow: 0 0 6px var(--r); animation: none; }
+.led.warn2 { background: #e8a13c; box-shadow: 0 0 6px #e8a13c; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
 .tb-stats { display: flex; align-items: stretch; flex: 1; overflow-x: auto; }
@@ -215,7 +217,7 @@ td.r { text-align: right; }
   <div class="tb-brand">CLBOT/TERM</div>
   <div class="tb-pills">
     <span id="mode-pill" class="pill p-paper">PAPER</span>
-    <span><span class="led"></span></span>
+    <span title="bot heartbeat"><span class="led" id="health-led"></span></span>
     <span id="ml-pill" class="pill p-ml warn">ML·LOADING</span>
   </div>
   <div class="tb-stats">
@@ -569,6 +571,19 @@ async function loadActivity() {
     : '';
 }
 
+async function loadHealth() {
+  const led = $('health-led');
+  try {
+    const h = await fetch('/api/health').then(r=>r.json());
+    led.className = 'led' + (!h.ok ? ' stale' : (!h.price_stream_live ? ' warn2' : ''));
+    led.parentElement.title = !h.ok
+      ? `BOT STALLED — last tick ${h.last_tick ? ts(h.last_tick) : 'never'}`
+      : (!h.price_stream_live
+          ? `running, but price stream is stale (exits on REST fallback) · last tick ${ts(h.last_tick)}`
+          : `healthy · last tick ${ts(h.last_tick)} (${h.tick_age_seconds}s ago)`);
+  } catch (e) { led.className = 'led stale'; led.parentElement.title = 'dashboard cannot reach bot'; }
+}
+
 async function loadLiq() {
   const rows = await fetch('/api/liquidations').then(r=>r.json());
   const b = $('liq-body');
@@ -617,7 +632,7 @@ $('mode-pill').onclick = async () => {
 };
 
 async function refresh() {
-  try { await Promise.all([loadSummary(),loadChart(),loadHeatmap(),loadStrategies(),loadOpen(),loadClosed(),loadLiq(),loadActivity()]); }
+  try { await Promise.all([loadSummary(),loadChart(),loadHeatmap(),loadStrategies(),loadOpen(),loadClosed(),loadLiq(),loadActivity(),loadHealth()]); }
   catch(e) { console.warn('refresh error', e); }
 }
 

@@ -49,6 +49,7 @@ class RSIBBStrategy(BaseStrategy):
 
         features = {
             "rsi": float(rsi), "bb_position": float(bb_pos), "adx": adx,
+            "bb_width": float(last["bb_width"]) if pd.notna(last.get("bb_width")) else None,
             "macd": float(last["macd"]) if pd.notna(last.get("macd")) else None,
             "macd_signal": float(last["macd_signal"]) if pd.notna(last.get("macd_signal")) else None,
             "volume_ratio": vol_ratio, "atr": atr,

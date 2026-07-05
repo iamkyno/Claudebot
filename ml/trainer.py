@@ -9,6 +9,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
     accuracy_score, brier_score_loss, f1_score, precision_score, recall_score,
 )
+from sklearn.model_selection import TimeSeriesSplit
 from sqlalchemy import text
 
 from data.db import get_session
@@ -16,11 +17,14 @@ from data.db import get_session
 logger = logging.getLogger(__name__)
 
 # DB column names, positionally aligned with ml/predictor.FEATURE_ORDER.
+# New features are APPENDED only — old signal rows read NULL -> 0 for them,
+# so historical data keeps training alongside the richer new rows.
 SIGNAL_COLS = [
     "rsi", "macd", "macd_signal", "bb_upper", "bb_lower", "bb_position",
     "ema_9", "ema_21", "ema_50", "atr", "volume_ratio",
     "price_change_1h", "price_change_4h", "price_change_24h",
     "funding_rate", "orderbook_imbalance", "tv_recommendation",
+    "adx", "bb_width", "oi_change", "taker_flow",
 ]
 
 # 1m scalp signals and 1h swing signals are different populations (features,
@@ -120,10 +124,18 @@ class ModelTrainer:
             "brier": float(brier_score_loss(y_test, y_prob)),
             "training_samples": len(df),
         }
+
+        # Walk-forward CV: a single holdout can flatter or damn a model by
+        # luck of the window — 3 expanding time folds give an honest spread.
+        cv_f1 = self._walk_forward_f1(X, y, sample_len=len(df))
+        if cv_f1 is not None:
+            metrics["cv_f1"] = cv_f1
+
         logger.info(
             f"{model_name} trained — acc={metrics['accuracy']:.3f} "
-            f"f1={metrics['f1']:.3f} brier={metrics['brier']:.3f} "
-            f"({method}-calibrated, {pos}/{len(y_train)} train-wins, "
+            f"f1={metrics['f1']:.3f} brier={metrics['brier']:.3f}"
+            + (f" cv_f1={cv_f1:.3f}" if cv_f1 is not None else "")
+            + f" ({method}-calibrated, {pos}/{len(y_train)} train-wins, "
             f"test_n={len(y_test)})"
         )
 
@@ -134,6 +146,29 @@ class ModelTrainer:
 
         return {"model_name": model_name, "version": version,
                 "metrics": metrics, "model_file": str(model_path)}
+
+    @staticmethod
+    def _walk_forward_f1(X, y, sample_len: int) -> float | None:
+        """Mean F1 across 3 expanding time folds (plain XGB, uncalibrated —
+        this is a stability read on the signal, not the shipped model)."""
+        if sample_len < 90:
+            return None
+        try:
+            scores = []
+            for tr_idx, te_idx in TimeSeriesSplit(n_splits=3).split(X):
+                y_tr, y_te = y.iloc[tr_idx], y.iloc[te_idx]
+                if y_tr.nunique() < 2 or y_te.nunique() < 2:
+                    continue
+                m = xgb.XGBClassifier(
+                    n_estimators=80, max_depth=3, learning_rate=0.05,
+                    subsample=0.85, colsample_bytree=0.85,
+                    reg_lambda=1.5, eval_metric="logloss", random_state=42,
+                )
+                m.fit(X.iloc[tr_idx], y_tr)
+                scores.append(f1_score(y_te, m.predict(X.iloc[te_idx]), zero_division=0))
+            return float(np.mean(scores)) if scores else None
+        except Exception:
+            return None
 
     def _load_data(self, class_filter: str) -> pd.DataFrame | None:
         session = get_session()

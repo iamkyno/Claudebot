@@ -34,6 +34,14 @@ _MIGRATIONS = [
     "ALTER TABLE bot_state ALTER COLUMN snapshot_time SET DEFAULT (NOW() AT TIME ZONE 'utc')",
     "ALTER TABLE liquidation_events ALTER COLUMN created_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
     "ALTER TABLE ohlcv_cache ALTER COLUMN created_at SET DEFAULT (NOW() AT TIME ZONE 'utc')",
+    # Exchange-native protective stop parked on Binance (live mode) so the
+    # position stays protected while the bot is down.
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS protective_order_id VARCHAR(64)",
+    # New ML features (appended to SIGNAL_COLS/FEATURE_ORDER; old rows NULL->0).
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS adx NUMERIC(10, 4)",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS bb_width NUMERIC(12, 8)",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS oi_change NUMERIC(12, 8)",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS taker_flow NUMERIC(6, 4)",
 ]
 
 

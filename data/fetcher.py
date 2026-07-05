@@ -40,26 +40,27 @@ class DataFetcher:
             return self._load_from_cache(symbol, timeframe, limit)
 
     def _cache(self, symbol: str, timeframe: str, df: pd.DataFrame, tail: int = 120):
-        # Only upsert the most recent candles: caching 500 rows per symbol per
-        # tick is ~30k writes/min across the universe for data that's already
-        # there. The tail keeps the offline fallback deep enough while the
-        # high-frequency scalp loop passes a much smaller tail (fresh bars only).
+        # Only the most recent candles, and ONE multi-row upsert instead of a
+        # Python loop of single INSERTs — cuts DB round-trips ~100x per fetch.
         df = df.tail(tail)
+        if df.empty:
+            return
+        values, params = [], {"symbol": symbol, "timeframe": timeframe}
+        for i, (ts, row) in enumerate(df.iterrows()):
+            values.append(f"(:symbol, :timeframe, :t{i}, :o{i}, :h{i}, :l{i}, :c{i}, :v{i})")
+            params.update({f"t{i}": ts, f"o{i}": row["open"], f"h{i}": row["high"],
+                           f"l{i}": row["low"], f"c{i}": row["close"], f"v{i}": row["volume"]})
+        sql = f"""
+            INSERT INTO ohlcv_cache
+                (symbol, timeframe, open_time, open_price, high_price, low_price, close_price, volume)
+            VALUES {", ".join(values)}
+            ON CONFLICT (symbol, timeframe, open_time)
+            DO UPDATE SET close_price=EXCLUDED.close_price, volume=EXCLUDED.volume,
+                          high_price=EXCLUDED.high_price, low_price=EXCLUDED.low_price
+        """
         session = get_session()
         try:
-            for ts, row in df.iterrows():
-                session.execute(text("""
-                    INSERT INTO ohlcv_cache
-                        (symbol, timeframe, open_time, open_price, high_price, low_price, close_price, volume)
-                    VALUES
-                        (:symbol, :timeframe, :open_time, :open, :high, :low, :close, :volume)
-                    ON CONFLICT (symbol, timeframe, open_time)
-                    DO UPDATE SET close_price=EXCLUDED.close_price, volume=EXCLUDED.volume
-                """), {
-                    "symbol": symbol, "timeframe": timeframe, "open_time": ts,
-                    "open": row["open"], "high": row["high"],
-                    "low": row["low"], "close": row["close"], "volume": row["volume"],
-                })
+            session.execute(text(sql), params)
             session.commit()
         except Exception as e:
             session.rollback()

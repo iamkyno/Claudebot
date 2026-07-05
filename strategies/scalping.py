@@ -124,6 +124,8 @@ class ScalpStrategy(BaseStrategy):
             "ema_50": float(last["ema_50"]) if pd.notna(last.get("ema_50")) else None,
             "atr": atr,
             "volume_ratio": vol_ratio,
+            "adx": float(last["adx"]) if pd.notna(last.get("adx")) else None,
+            "bb_width": float(last["bb_width"]) if pd.notna(last.get("bb_width")) else None,
             "price_change_1h": pc1,
             "price_change_4h": float(last["price_change_4h"]) if pd.notna(last.get("price_change_4h")) else None,
             "price_change_24h": float(last["price_change_24h"]) if pd.notna(last.get("price_change_24h")) else None,

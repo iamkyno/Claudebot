@@ -206,6 +206,19 @@ class OrderManager:
                         "qty": quantity, "cost": cost, "entry_fee": entry_fee,
                     }
 
+            # LIVE: park a protective stop on the exchange itself so the
+            # position survives bot downtime. Paper stops stay bot-managed.
+            if not self.paper_mode and trade_id and stop_loss:
+                po = self.client.place_protective_stop(
+                    symbol, side, quantity, stop_loss,
+                    venue="futures" if use_futures else "spot",
+                )
+                if po and po.get("id"):
+                    self._set_protective(trade_id, str(po["id"]))
+                else:
+                    logger.warning(f"{symbol} trade #{trade_id} is UNPROTECTED "
+                                   f"on-exchange — bot-managed stop only")
+
             prefix = "[PAPER] " if self.paper_mode else ""
             tag = "LONG" if side == "buy" else "SHORT"
             logger.info(
@@ -241,6 +254,15 @@ class OrderManager:
             use_futures = venue == "futures" or side == "sell"
             rate = self.fee_rate(side, venue)
 
+            # LIVE: lift the parked exchange stop before closing, otherwise it
+            # can double-fire on the flat position. (Re-parked below on trims.)
+            if not self.paper_mode and trade_id:
+                old = self._get_protective(trade_id)
+                if old:
+                    self.client.cancel_protective_stop(
+                        symbol, old, venue="futures" if use_futures else "spot")
+                    self._set_protective(trade_id, None)
+
             if self.paper_mode:
                 fill_price = self._slip(price, close_side)
                 order = self._paper_order(symbol, close_side, close_qty, fill_price)
@@ -257,6 +279,22 @@ class OrderManager:
 
             if self.paper_mode and close_ok:
                 self._settle_paper(trade_id, fill_price, close_qty, side, fraction, rate)
+
+            # LIVE partial (TP1): re-park a breakeven stop for the remainder.
+            if not self.paper_mode and close_ok and fraction < 1.0 and trade_id:
+                session = get_session()
+                try:
+                    row = session.execute(text(
+                        "SELECT entry_price, quantity FROM trades WHERE id=:id AND status='open'"
+                    ), {"id": trade_id}).fetchone()
+                finally:
+                    session.close()
+                if row:
+                    po = self.client.place_protective_stop(
+                        symbol, side, float(row[1]), float(row[0]),
+                        venue="futures" if use_futures else "spot")
+                    if po and po.get("id"):
+                        self._set_protective(trade_id, str(po["id"]))
 
             prefix = "[PAPER] " if self.paper_mode else ""
             tag = "CLOSE" if fraction >= 1.0 else f"TRIM {fraction:.0%}"
@@ -294,9 +332,38 @@ class OrderManager:
                 pos["cost"] -= released_margin
                 pos["entry_fee"] *= (1 - fraction)
 
+    # -- protective stop bookkeeping ------------------------------------- #
+
+    def _set_protective(self, trade_id: int, order_id: str | None):
+        session = get_session()
+        try:
+            session.execute(
+                text("UPDATE trades SET protective_order_id=:oid WHERE id=:id"),
+                {"oid": order_id, "id": trade_id},
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.debug(f"Protective id save failed for {trade_id}: {e}")
+        finally:
+            session.close()
+
+    def _get_protective(self, trade_id: int) -> str | None:
+        session = get_session()
+        try:
+            row = session.execute(text(
+                "SELECT protective_order_id FROM trades WHERE id=:id"
+            ), {"id": trade_id}).fetchone()
+            return row[0] if row and row[0] else None
+        finally:
+            session.close()
+
     # -- trailing stop -------------------------------------------------- #
 
-    def update_stop(self, trade_id: int, new_stop: float):
+    def update_stop(self, trade_id: int, new_stop: float, symbol: str = None,
+                    side: str = "buy", quantity: float = None, venue: str = None):
+        """Move a stop. In live mode the parked exchange stop is replaced too
+        (cancel old, park new) so on-exchange protection trails with the bot."""
         session = get_session()
         try:
             session.execute(
@@ -309,6 +376,18 @@ class OrderManager:
             logger.debug(f"Stop update failed for {trade_id}: {e}")
         finally:
             session.close()
+
+        if self.paper_mode or not symbol or not quantity:
+            return
+        use_futures = venue == "futures" or side == "sell"
+        old = self._get_protective(trade_id)
+        if old:
+            self.client.cancel_protective_stop(
+                symbol, old, venue="futures" if use_futures else "spot")
+        po = self.client.place_protective_stop(
+            symbol, side, quantity, new_stop,
+            venue="futures" if use_futures else "spot")
+        self._set_protective(trade_id, str(po["id"]) if po and po.get("id") else None)
 
     def record_high_low(self, trade_id: int, highest: float = None, lowest: float = None):
         """Persist the best price seen so the trailing stop survives restarts."""

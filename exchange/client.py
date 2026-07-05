@@ -205,6 +205,41 @@ class BinanceClient:
             pass
         return None
 
+    def place_protective_stop(self, symbol: str, position_side: str,
+                              amount: float, stop_price: float,
+                              venue: str = "spot"):
+        """
+        Park a STOP-MARKET order ON THE EXCHANGE so the position stays
+        protected even when the bot is down. position_side is the side of the
+        open position: a long is protected by a stop-SELL, a short by a
+        stop-BUY. Returns the order dict, or None (caller logs 'unprotected').
+        """
+        close_side = "sell" if position_side == "buy" else "buy"
+        try:
+            if venue == "futures" or position_side == "sell":
+                return self.futures.create_order(
+                    self._perp(symbol), "STOP_MARKET", close_side, amount, None,
+                    {"stopPrice": stop_price, "reduceOnly": True},
+                )
+            # Spot STOP_LOSS = market order triggered at stopPrice.
+            return self.spot.create_order(
+                symbol, "STOP_LOSS", close_side, amount, None,
+                {"stopPrice": stop_price},
+            )
+        except Exception as e:
+            logger.warning(f"Protective stop failed for {symbol} @ {stop_price}: {e}")
+            return None
+
+    def cancel_protective_stop(self, symbol: str, order_id: str, venue: str = "spot"):
+        """Best-effort cancel of a parked stop (it may have already fired)."""
+        try:
+            if venue == "futures":
+                self.futures.cancel_order(order_id, self._perp(symbol))
+            else:
+                self.spot.cancel_order(order_id, symbol)
+        except Exception as e:
+            logger.debug(f"Protective cancel {order_id} ({symbol}): {e}")
+
     @retry()
     def close_futures_position(self, symbol: str, amount: float,
                                close_side: str = "buy"):

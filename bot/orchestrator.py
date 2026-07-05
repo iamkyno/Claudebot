@@ -14,10 +14,12 @@ from data.symbol_selector import SymbolSelector
 from data.tradingview import TradingViewAnalyzer
 from data.regime import classify_regime, regime_allows
 from data.sentiment import SentimentFeed
+from data.open_interest import OpenInterestTracker
 from exchange.client import BinanceClient
 from exchange.orders import OrderManager
 from exchange.liquidation_feed import LiquidationFeed
 from exchange.price_stream import PriceStream
+from exchange.trade_flow import TradeFlowStream
 from risk.manager import RiskManager
 from risk.guards import RiskGuards
 from ml.trainer import ModelTrainer
@@ -155,10 +157,21 @@ class Orchestrator:
         self._last_day: date = None
         self._trades_since_retrain = 0
         self._retrain_every = cfg["ml"].get("retrain_every_trades", 100)
+        # Heartbeat + feed watchdog (surfaced via the dashboard /api/health).
+        self._last_tick_at: datetime | None = None
+        self._ws_warned_at: datetime | None = None
 
         # Start live liquidation feed (daemon thread)
         self._liq_feed = LiquidationFeed()
         self._liq_feed.start()
+
+        # Microstructure feeds: open-interest crowding + tape aggressor flow.
+        # Both are ML features (oi_change / taker_flow); flow covers the most
+        # liquid symbols (the scalp set + a margin) on one combined WS.
+        self.oi = OpenInterestTracker(self.exchange)
+        flow_symbols = self.symbols[: max(self.scalp_max_symbols, 10)]
+        self.trade_flow = TradeFlowStream(flow_symbols)
+        self.trade_flow.start()
 
         # Sniper mode: scalps get their own fast loop (exits every few seconds
         # off the WS price, entry scans several times per 1m candle) instead
@@ -172,6 +185,7 @@ class Orchestrator:
                 scalper=self.scalper, price_stream=self.price_stream,
                 tv=self.tv, notifier=self.notifier, cfg=cfg,
                 get_symbols=lambda: self.symbols,
+                trade_flow=self.trade_flow, oi=self.oi,
             )
             self.scalp_engine.start()
 
@@ -220,6 +234,7 @@ class Orchestrator:
             if self.scalp_engine:
                 self.scalp_engine.stop()
             self._liq_feed.stop()
+            self.trade_flow.stop()
             if self.price_stream:
                 self.price_stream.stop()
             # Give the scalp engine a moment to finish an in-flight close —
@@ -253,6 +268,18 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
 
     def _tick(self):
+        self._last_tick_at = datetime.utcnow()
+
+        # Feed watchdog: if the WS price stream has gone silently stale, exits
+        # degrade to REST prices — that must be loud, not silent.
+        if self.price_stream and not self.price_stream.is_live(max_staleness=30):
+            now = datetime.utcnow()
+            if (self._ws_warned_at is None
+                    or (now - self._ws_warned_at).total_seconds() > 300):
+                logger.warning("Price stream is STALE (>30s without a message) "
+                               "— exits are falling back to REST prices")
+                self._ws_warned_at = now
+
         equity = self._equity()   # cash + open positions — drives risk/kill-switch
         free = self._free()       # un-deployed cash — drives position sizing
 
@@ -266,6 +293,7 @@ class Orchestrator:
             self._send_daily_report()
             if self._last_day is not None:
                 self._retrain()      # daily retrain
+                self._prune_tables()  # keep hot tables from growing unbounded
             self._last_day = today
 
         # Refresh symbol list periodically
@@ -320,6 +348,7 @@ class Orchestrator:
                     "funding": self._get_funding_rate(symbol),
                     "ob": self.exchange.get_orderbook_imbalance(symbol),
                     "tv": self.tv.score(symbol) if self.tv else None,
+                    "oi": self.oi.change(symbol),
                 }
             except Exception as e:
                 logger.debug(f"Prefetch failed for {symbol}: {e}")
@@ -344,11 +373,14 @@ class Orchestrator:
             funding_rate = pre["funding"]
             ob_imbalance = pre["ob"]
             tv_score = pre["tv"]
+            oi_change = pre.get("oi")
         else:
             htf_dir = self._htf_direction(symbol) if self.f_mtf else None
             funding_rate = self._get_funding_rate(symbol)
             ob_imbalance = self.exchange.get_orderbook_imbalance(symbol)
             tv_score = self.tv.score(symbol) if self.tv else None
+            oi_change = self.oi.change(symbol)
+        taker_flow = self.trade_flow.flow(symbol)
 
         for strategy in self.strategies:
             # Bug #5 fix: re-check kill switch each iteration so a loss that
@@ -396,6 +428,8 @@ class Orchestrator:
             signal.features["funding_rate"] = funding_rate
             signal.features["orderbook_imbalance"] = ob_imbalance
             signal.features["tv_recommendation"] = tv_score
+            signal.features["oi_change"] = oi_change
+            signal.features["taker_flow"] = taker_flow
 
             ok, ml_conf = self.predictor.should_trade(signal.features, strategy.name)
             signal_id = self.predictor.log_signal(
@@ -685,6 +719,9 @@ class Orchestrator:
     def _update_trailing(self, trade, side: str, price: float, atr: float) -> float | None:
         """Ratchet the stop toward price. Returns the new stop when it moved
         (so the caller can act on it this tick), else None."""
+        venue = "futures" if trade.strategy == "scalp" else None
+        kw = dict(symbol=trade.symbol, side=side,
+                  quantity=float(trade.quantity), venue=venue)
         if side == "buy":
             hi = float(trade.highest_price) if trade.highest_price else float(trade.entry_price)
             if price > hi:
@@ -692,7 +729,7 @@ class Orchestrator:
                 new_stop = self.risk.trailing_stop("buy", price, atr)
                 cur = float(trade.stop_loss) if trade.stop_loss else 0.0
                 if new_stop > cur:
-                    self.orders.update_stop(trade.id, new_stop)
+                    self.orders.update_stop(trade.id, new_stop, **kw)
                     return new_stop
         else:
             lo = float(trade.lowest_price) if trade.lowest_price else float(trade.entry_price)
@@ -701,7 +738,7 @@ class Orchestrator:
                 new_stop = self.risk.trailing_stop("sell", price, atr)
                 cur = float(trade.stop_loss) if trade.stop_loss else 1e18
                 if new_stop < cur:
-                    self.orders.update_stop(trade.id, new_stop)
+                    self.orders.update_stop(trade.id, new_stop, **kw)
                     return new_stop
         return None
 
@@ -754,7 +791,7 @@ class Orchestrator:
     def _equity(self) -> float:
         if self.paper_mode:
             return self.orders.equity()
-        return self._real_balance()
+        return self._real_equity()
 
     def _free(self) -> float:
         if self.paper_mode:
@@ -762,12 +799,46 @@ class Orchestrator:
         return self._real_balance()
 
     def _real_balance(self) -> float:
+        """Free spot USDT — what's available to open new positions."""
         try:
             b = self.exchange.fetch_balance()
             return float(b.get("USDT", {}).get("free", 0))
         except Exception as e:
             logger.error(f"Balance fetch failed: {e}")
             return 0.0
+
+    def _real_equity(self) -> float:
+        """
+        TRUE live equity, not just free cash: spot USDT (free+locked) plus the
+        futures margin balance (which includes unrealized futures PnL) plus
+        open spot positions marked to market. Free-cash-only equity made the
+        kill switch blind to everything actually at risk.
+        """
+        total = 0.0
+        try:
+            spot = self.exchange.spot.fetch_balance()
+            u = spot.get("USDT", {})
+            total += float(u.get("total") or (u.get("free", 0) or 0) + (u.get("used", 0) or 0))
+        except Exception as e:
+            logger.error(f"Spot balance fetch failed: {e}")
+        try:
+            fut = self.exchange.futures.fetch_balance()
+            info = fut.get("info", {}) or {}
+            margin = info.get("totalMarginBalance")
+            total += float(margin) if margin is not None else \
+                float(fut.get("USDT", {}).get("total", 0) or 0)
+        except Exception as e:
+            logger.debug(f"Futures balance fetch failed (no futures wallet?): {e}")
+        # Spot longs are held as coins — value them at the live price.
+        for t in self.orders.get_open_trades():
+            if (t.side or "buy") == "buy" and t.strategy != "scalp":
+                px = None
+                if self.price_stream:
+                    px = self.price_stream.get_price(t.symbol)
+                if not px:
+                    px = float(t.entry_price)
+                total += float(px) * float(t.quantity)
+        return total
 
     def _get_funding_rate(self, symbol: str) -> float | None:
         try:
@@ -776,6 +847,24 @@ class Orchestrator:
             return data.get("fundingRate") if data else None
         except Exception:
             return None
+
+    def _prune_tables(self):
+        """Retention for high-churn tables. The candle cache is a live-data
+        fallback (~50k rows/day at 20 symbols), not an archive — historical
+        research uses backtest/data.py downloads instead."""
+        session = get_session()
+        try:
+            r1 = session.execute(text(
+                "DELETE FROM ohlcv_cache WHERE open_time < NOW() - INTERVAL '30 days'"))
+            r2 = session.execute(text(
+                "DELETE FROM liquidation_events WHERE event_time < NOW() - INTERVAL '14 days'"))
+            session.commit()
+            logger.info(f"Pruned {r1.rowcount} cached candles, {r2.rowcount} liquidation events")
+        except Exception as e:
+            session.rollback()
+            logger.debug(f"Prune failed: {e}")
+        finally:
+            session.close()
 
     def _send_daily_report(self):
         session = get_session()

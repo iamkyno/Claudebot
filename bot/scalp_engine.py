@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 class ScalpEngine(threading.Thread):
     def __init__(self, *, fetcher, exchange, orders, risk, guards, predictor,
-                 scalper, price_stream, tv, notifier, cfg, get_symbols):
+                 scalper, price_stream, tv, notifier, cfg, get_symbols,
+                 trade_flow=None, oi=None):
         super().__init__(daemon=True, name="scalp-engine")
         self.fetcher = fetcher
         self.exchange = exchange
@@ -37,6 +38,8 @@ class ScalpEngine(threading.Thread):
         self.tv = tv
         self.notifier = notifier
         self.get_symbols = get_symbols          # callable -> current symbol list
+        self.trade_flow = trade_flow            # tape aggressor-flow (ML feature)
+        self.oi = oi                            # open-interest tracker (ML feature)
 
         scalp_cfg = cfg.get("scalp", {})
         feat = cfg.get("features", {})
@@ -141,6 +144,8 @@ class ScalpEngine(threading.Thread):
             if self.f_trailing and tp:
                 dist = self.trail_distance(entry, tp)
                 armed_at = entry + (tp - entry) * 0.5   # halfway to TP
+                kw = dict(symbol=t.symbol, side=side,
+                          quantity=float(t.quantity), venue="futures")
                 if side == "buy":
                     hi = float(t.highest_price) if t.highest_price else entry
                     if price > hi:
@@ -149,7 +154,7 @@ class ScalpEngine(threading.Thread):
                         # Breakeven floor first, then trail from the high.
                         cand = max(entry, max(price, hi) - dist)
                         if stop is None or cand > stop:
-                            self.orders.update_stop(t.id, cand)
+                            self.orders.update_stop(t.id, cand, **kw)
                             stop = cand
                 else:
                     lo = float(t.lowest_price) if t.lowest_price else entry
@@ -158,7 +163,7 @@ class ScalpEngine(threading.Thread):
                     if price <= armed_at:
                         cand = min(entry, min(price, lo) + dist)
                         if stop is None or cand < stop:
-                            self.orders.update_stop(t.id, cand)
+                            self.orders.update_stop(t.id, cand, **kw)
                             stop = cand
 
             # Bracket + time stop.
@@ -229,6 +234,8 @@ class ScalpEngine(threading.Thread):
                 signal.features["funding_rate"] = None
                 signal.features["orderbook_imbalance"] = ob
                 signal.features["tv_recommendation"] = tv_score
+                signal.features["taker_flow"] = self.trade_flow.flow(symbol) if self.trade_flow else None
+                signal.features["oi_change"] = self.oi.change(symbol) if self.oi else None
 
                 ok, ml_conf = self.predictor.should_trade(signal.features, "scalp")
                 signal_id = self.predictor.log_signal(
