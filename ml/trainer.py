@@ -70,7 +70,11 @@ class ModelTrainer:
         # split: we must train on the past and validate on the future.
         df = df.sort_values("created_at").reset_index(drop=True)
 
-        X = df[SIGNAL_COLS].fillna(0)
+        # Coerce at the point of use: PostgreSQL NUMERIC arrives as
+        # decimal.Decimal (pandas 'object' dtype) which XGBoost rejects.
+        # Belt-and-suspenders with _load_data's coercion — guarantees float
+        # features no matter how the frame reached here.
+        X = df[SIGNAL_COLS].apply(pd.to_numeric, errors="coerce").fillna(0)
         # Fee-aware label: did the trade clear a meaningful net edge?
         pnl_pct = pd.to_numeric(df["actual_pnl_pct"], errors="coerce").fillna(0.0)
         y = (pnl_pct > self.label_min_edge).astype(int)
@@ -182,9 +186,15 @@ class ModelTrainer:
             rows = result.fetchall()
             if not rows:
                 return None
-            return pd.DataFrame(
+            df = pd.DataFrame(
                 rows, columns=SIGNAL_COLS + ["outcome", "actual_pnl_pct", "created_at"]
             )
+            # PostgreSQL NUMERIC comes back as decimal.Decimal -> pandas 'object'
+            # dtype, which XGBoost rejects ("Invalid columns: rsi: object, …").
+            # Coerce every feature + label column to real floats.
+            df[SIGNAL_COLS] = df[SIGNAL_COLS].apply(pd.to_numeric, errors="coerce")
+            df["actual_pnl_pct"] = pd.to_numeric(df["actual_pnl_pct"], errors="coerce")
+            return df
         finally:
             session.close()
 
