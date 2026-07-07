@@ -160,6 +160,7 @@ class Orchestrator:
         # Heartbeat + feed watchdog (surfaced via the dashboard /api/health).
         self._last_tick_at: datetime | None = None
         self._ws_warned_at: datetime | None = None
+        self._started_at: datetime | None = None
 
         # Start live liquidation feed (daemon thread)
         self._liq_feed = LiquidationFeed()
@@ -200,6 +201,7 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
 
     def run(self):
+        self._started_at = datetime.utcnow()
         mode = "PAPER" if self.paper_mode else "LIVE"
         logger.info(f"Claudebot starting — mode={mode} symbols={len(self.symbols)}")
         equity = self._equity()
@@ -271,9 +273,13 @@ class Orchestrator:
         self._last_tick_at = datetime.utcnow()
 
         # Feed watchdog: if the WS price stream has gone silently stale, exits
-        # degrade to REST prices — that must be loud, not silent.
-        if self.price_stream and not self.price_stream.is_live(max_staleness=30):
-            now = datetime.utcnow()
+        # degrade to REST prices — that must be loud, not silent. Skip the
+        # first 60s so a still-connecting stream at boot isn't a false alarm.
+        now = datetime.utcnow()
+        boot_grace = (self._started_at is not None
+                      and (now - self._started_at).total_seconds() < 60)
+        if (self.price_stream and not boot_grace
+                and not self.price_stream.is_live(max_staleness=30)):
             if (self._ws_warned_at is None
                     or (now - self._ws_warned_at).total_seconds() > 300):
                 logger.warning("Price stream is STALE (>30s without a message) "
