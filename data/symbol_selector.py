@@ -15,9 +15,18 @@ class SymbolSelector:
     _FALLBACK = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT",
                  "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT"]
 
-    # Stablecoins and wrapped tokens that shouldn't be traded
+    # Known stablecoins/wrapped tokens — kept as a fast-path, but the real
+    # filter below is structural (near-zero 24h range vs USDT) so newly
+    # listed stablecoins (e.g. USD1, RLUSD) are caught without needing a
+    # maintained name list.
     _SKIP = {"USDC", "BUSD", "TUSD", "USDP", "DAI", "FDUSD",
-             "WBTC", "BETH", "LDOT", "STETH"}
+             "WBTC", "BETH", "LDOT", "STETH", "USD1", "RLUSD",
+             "USDE", "PYUSD", "USDD", "GUSD", "EURC"}
+    # A pair whose 24h high/low range is this tight (as a fraction of price)
+    # has nothing for a strategy to trade — a peg, not volatility. 0.5%
+    # comfortably passes real assets on a quiet day but catches every
+    # USD-pegged stablecoin pair regardless of name.
+    _MIN_RANGE_PCT = 0.005
 
     def __init__(self, exchange_client, max_symbols: int = 20,
                  min_volume_usdt: float = 15_000_000):
@@ -45,6 +54,14 @@ class SymbolSelector:
 
                 vol_24h = ticker.get("quoteVolume") or 0.0
                 if vol_24h < self.min_volume:
+                    continue
+
+                # Structural stablecoin filter: near-zero 24h range means
+                # nothing for RSI/BB/EMA/grid to trade — just fee-bleeding
+                # noise around a peg.
+                last = ticker.get("last") or 0.0
+                hi, lo = ticker.get("high") or 0.0, ticker.get("low") or 0.0
+                if last > 0 and (hi - lo) / last < self._MIN_RANGE_PCT:
                     continue
 
                 change_abs = abs(ticker.get("percentage") or 0.0)
