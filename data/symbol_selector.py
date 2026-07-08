@@ -34,6 +34,7 @@ class SymbolSelector:
         self.max_symbols = max_symbols
         self.min_volume = min_volume_usdt
         self._cache: List[str] = []
+        self._volumes: dict = {}          # symbol -> 24h quote volume
         self._cached_at: datetime | None = None
 
     # ------------------------------------------------------------------ #
@@ -67,10 +68,11 @@ class SymbolSelector:
                 change_abs = abs(ticker.get("percentage") or 0.0)
                 # Opportunity score: volume × volatility premium
                 score = vol_24h * (1.0 + change_abs / 100.0)
-                candidates.append((symbol, score))
+                candidates.append((symbol, score, vol_24h))
 
             candidates.sort(key=lambda x: x[1], reverse=True)
-            self._cache = [sym for sym, _ in candidates[: self.max_symbols]]
+            self._cache = [sym for sym, _, _ in candidates[: self.max_symbols]]
+            self._volumes = {sym: vol for sym, _, vol in candidates}
             self._cached_at = datetime.utcnow()
 
             logger.info(
@@ -82,3 +84,18 @@ class SymbolSelector:
         except Exception as e:
             logger.error(f"Symbol discovery failed: {e}")
             return self._cache or self._FALLBACK
+
+    def top_by_volume(self, n: int, min_volume: float = 0.0) -> List[str]:
+        """
+        PURE liquidity ranking — for the scalper. The opportunity score above
+        deliberately boosts volatile movers, which surfaces pumping microcaps
+        whose thin books let price gap through scalp stops (observed: a stop
+        planned at -0.18% filling at -0.50%). Scalps want the deepest books,
+        not the fastest movers.
+        """
+        ranked = sorted(
+            ((s, v) for s, v in self._volumes.items() if v >= min_volume),
+            key=lambda x: x[1], reverse=True,
+        )
+        out = [s for s, _ in ranked[:n]]
+        return out or (self._cache[:n] if self._cache else self._FALLBACK[:n])

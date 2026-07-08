@@ -55,6 +55,33 @@ class TestStablecoinFiltering:
         assert sel.get_symbols(refresh=True) == []
 
 
+class TestVolumeRanking:
+    def test_scalp_list_ranks_by_pure_volume_not_score(self):
+        # LOWCAP pumps 40% on $60M volume -> tops the SCORE list; the scalp
+        # list must still prefer the deeper BTC/ETH books.
+        tickers = {
+            "LOWCAP/USDT": _ticker(0.027, 0.40, quote_vol=60_000_000),
+            "BTC/USDT": _ticker(65000, 0.02, quote_vol=900_000_000),
+            "ETH/USDT": _ticker(3200, 0.02, quote_vol=500_000_000),
+        }
+        sel = SymbolSelector(FakeExchange(tickers), max_symbols=10, min_volume_usdt=1_000_000)
+        sel.get_symbols(refresh=True)
+        assert sel.top_by_volume(2) == ["BTC/USDT", "ETH/USDT"]
+
+    def test_min_volume_floor_excludes_thin_books(self):
+        tickers = {
+            "THIN/USDT": _ticker(1.5, 0.10, quote_vol=20_000_000),
+            "BTC/USDT": _ticker(65000, 0.02, quote_vol=900_000_000),
+        }
+        sel = SymbolSelector(FakeExchange(tickers), max_symbols=10, min_volume_usdt=1_000_000)
+        sel.get_symbols(refresh=True)
+        assert sel.top_by_volume(5, min_volume=50_000_000) == ["BTC/USDT"]
+
+    def test_fallback_before_first_refresh(self):
+        sel = SymbolSelector(FakeExchange({}), max_symbols=10)
+        assert len(sel.top_by_volume(3)) == 3   # falls back to defaults
+
+
 class TestStrategyToggle:
     def test_enabled_flag_respected_by_base(self):
         from strategies.grid import GridStrategy

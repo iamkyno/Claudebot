@@ -186,12 +186,16 @@ class Orchestrator:
         sniper = cfg.get("scalp", {}).get("sniper_mode", True)
         self.scalp_engine = None
         if self.scalper and sniper:
+            # Scalps get a PURE-liquidity symbol list (deepest books), not the
+            # volatility-boosted swing list that surfaces pumping microcaps.
+            scalp_min_vol = scalp_cfg.get("min_volume_usdt", 50_000_000)
             self.scalp_engine = ScalpEngine(
                 fetcher=self.fetcher, exchange=self.exchange, orders=self.orders,
                 risk=self.risk, guards=self.guards, predictor=self.predictor,
                 scalper=self.scalper, price_stream=self.price_stream,
                 tv=self.tv, notifier=self.notifier, cfg=cfg,
-                get_symbols=lambda: self.symbols,
+                get_symbols=lambda: self._selector.top_by_volume(
+                    self.scalp_max_symbols, min_volume=scalp_min_vol),
                 trade_flow=self.trade_flow, oi=self.oi,
             )
             self.scalp_engine.start()
@@ -542,7 +546,10 @@ class Orchestrator:
 
     def _process_scalps(self, equity: float):
         """Fast in/out scalping on the most liquid pairs (1m entry, 5m gate)."""
-        scalp_symbols = self.symbols[: self.scalp_max_symbols]
+        scalp_symbols = self._selector.top_by_volume(
+            self.scalp_max_symbols,
+            min_volume=self.cfg.get("scalp", {}).get("min_volume_usdt", 50_000_000),
+        )
         open_trades = self.orders.get_open_trades()
         free = self._free()
 

@@ -91,6 +91,8 @@ scalp:
   entry_timeframe: "1m"      # signals are read here
   trend_timeframe: "5m"      # higher-TF gate: never scalp against this trend
   max_symbols: 8             # only scalp the most liquid pairs
+  min_volume_usdt: 50000000  # scalp only pairs with >=$50M 24h volume —
+                             # thin books gap through tight scalp stops
   taker_fee_rate: 0.0005     # 0.05% per side (futures). Spot is ~0.001
   scalp_time_stop_min: 15    # cut a scalp that hasn't worked in N minutes
   sniper_mode: true          # dedicated fast loop, independent of the 60s tick

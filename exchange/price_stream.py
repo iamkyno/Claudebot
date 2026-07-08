@@ -19,7 +19,11 @@ import time
 
 logger = logging.getLogger(__name__)
 
-_STREAM_URL = "wss://stream.binance.com:9443/ws/!ticker@arr"
+# miniTicker carries the close price (all we read) at a fraction of the
+# full !ticker payload — on flaky connections the smaller stream stops the
+# socket buffer backing up and drowning the keepalive pings (the observed
+# "ping/pong timed out" loop).
+_STREAM_URL = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
 
 
 class PriceStream:
