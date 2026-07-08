@@ -39,12 +39,17 @@ GRID = {
     "sl_mult":       [0.4, 0.6, 0.8],
 }
 
-# Grid-strategy grid: 3 x 3 x 3 x 3 = 81 geometries (defaults: .5/4/1/35).
+# Grid-strategy grid: 3 x 4 x 4 x 3 = 144 geometries.
+# First sweep (spacing<=0.8, stop<=6, tp<=2, adx>=25): all 81 negative, and
+# the least-bad combo sat at the boundary on ALL FOUR dimensions — so the
+# space now extends past every one of them (wider spacing, much wider stops,
+# bigger targets, stricter trend gates) to see whether the gradient reaches
+# profit or just asymptotes below zero.
 GRID_GRID = {
-    "spacing_mult": [0.3, 0.5, 0.8],
-    "stop_mult":    [3.0, 4.0, 6.0],
-    "tp_mult":      [1.0, 1.5, 2.0],
-    "adx_kill":     [25, 35, 45],
+    "spacing_mult": [0.5, 0.8, 1.2],
+    "stop_mult":    [4.0, 6.0, 9.0, 12.0],
+    "tp_mult":      [1.5, 2.0, 3.0, 4.0],
+    "adx_kill":     [15, 20, 25],
 }
 
 # EMA-cross grid: 4 x 5 x 4 = 80 geometries (defaults: 2.25 / 4.5 / 20).
