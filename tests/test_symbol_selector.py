@@ -53,3 +53,10 @@ class TestStablecoinFiltering:
         tickers = {"BTC/USDT": _ticker(65000, 0.03, quote_vol=100_000)}
         sel = SymbolSelector(FakeExchange(tickers), max_symbols=10, min_volume_usdt=1_000_000)
         assert sel.get_symbols(refresh=True) == []
+
+
+class TestStrategyToggle:
+    def test_enabled_flag_respected_by_base(self):
+        from strategies.grid import GridStrategy
+        assert GridStrategy({"enabled": False}).is_enabled() is False
+        assert GridStrategy({}).is_enabled() is True

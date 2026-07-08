@@ -38,6 +38,22 @@ futures:
   leverage: 2                     # conservative default
   margin_mode: isolated           # isolate margin per position
 
+# Per-strategy switches. Flip any strategy on/off without touching code.
+strategies:
+  rsi_bb:              { enabled: true }
+  ema_cross:           { enabled: true }
+  funding_rate:        { enabled: true }
+  liquidation_cascade: { enabled: true }
+  pair_trading:        { enabled: true }
+  scalp:               { enabled: true }
+  grid:
+    # Disabled on evidence: the 12-month sweep found ZERO profitable
+    # geometries out of 81 (best PF 0.64, 0/3 folds positive, 1200+ trades)
+    # — high win rate, inverted payoff (wins 1 spacing, loses 3-6 when a
+    # trend runs the grid over). Live data agrees (-$63 on the last 105).
+    # Re-enable only if a future sweep finds a surviving geometry.
+    enabled: false
+
 # Advanced engine features. Every one is independently switchable so you can
 # A/B them. All default ON.
 features:

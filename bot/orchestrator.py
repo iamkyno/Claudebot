@@ -81,16 +81,21 @@ class Orchestrator:
         self.guards = RiskGuards(cfg["risk"])
         self.sentiment = SentimentFeed() if self.f_sentiment else None
 
-        # All strategies receive the risk config plus any optimizer-derived
+        # All strategies receive the risk config, plus their config.yaml
+        # strategies: block (enabled flag etc.), plus any optimizer-derived
         # tuning for their name (config/tuning.json) — evidence over defaults.
         risk_cfg = cfg["risk"]
+        strat_cfg = cfg.get("strategies", {}) or {}
         tuning = get_tuning()
 
         def s_cfg(name: str) -> dict:
             t = tuning.get(name, {})
             if t:
                 logger.info(f"Applying optimizer tuning to {name}: {t}")
-            return {**risk_cfg, **t}
+            merged = {**risk_cfg, **(strat_cfg.get(name) or {}), **t}
+            if not merged.get("enabled", True):
+                logger.info(f"Strategy {name} is DISABLED via config")
+            return merged
 
         self.strategies = [
             RSIBBStrategy(s_cfg("rsi_bb")),
@@ -109,7 +114,8 @@ class Orchestrator:
         scalp_tuning = get_tuning().get("scalp", {})
         if scalp_tuning:
             logger.info(f"Applying optimizer tuning to scalp: {scalp_tuning}")
-        self.scalp_enabled = scalp_cfg.get("enabled", True)
+        self.scalp_enabled = (scalp_cfg.get("enabled", True)
+                              and (strat_cfg.get("scalp") or {}).get("enabled", True))
         self.scalp_entry_tf = scalp_cfg.get("entry_timeframe", "1m")
         self.scalp_trend_tf = scalp_cfg.get("trend_timeframe", "5m")
         self.scalp_max_symbols = scalp_cfg.get("max_symbols", 8)
