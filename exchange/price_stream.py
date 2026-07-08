@@ -58,6 +58,16 @@ class PriceStream:
         """True if we've received a message recently."""
         return (time.time() - self._last_msg_at) < max_staleness
 
+    def kick(self):
+        """Force-close a zombie connection so the run-loop reconnects NOW
+        instead of waiting out its backoff. Safe to call anytime."""
+        logger.warning("Price stream kicked — forcing reconnect")
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------ #
 
     def _run(self):
@@ -76,6 +86,7 @@ class PriceStream:
             except Exception as e:
                 logger.warning(f"Price stream crashed: {e}")
             if self._running:
+                logger.info(f"Price stream reconnecting in {backoff}s…")
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
@@ -93,14 +104,21 @@ class PriceStream:
                 self._prices.update(updates)
                 for s in updates:
                     self._updated_at[s] = now
+            # First message after a stale spell = recovery worth announcing.
+            if self._last_msg_at and (now - self._last_msg_at) > 30:
+                logger.info(f"Price stream RECOVERED after "
+                            f"{now - self._last_msg_at:.0f}s gap — back to "
+                            f"real-time prices")
             self._last_msg_at = now
         except Exception as e:
             logger.debug(f"Price stream parse error: {e}")
 
     @staticmethod
     def _on_error(_ws, error):
-        logger.debug(f"Price stream error: {error}")
+        # WARNING, not debug: when the stream is failing, the WHY must be in
+        # the user's log, not hidden behind a debug flag.
+        logger.warning(f"Price stream error: {error}")
 
     @staticmethod
     def _on_close(_ws, code, msg):
-        logger.debug(f"Price stream closed: {code} {msg}")
+        logger.info(f"Price stream closed: {code} {msg}")

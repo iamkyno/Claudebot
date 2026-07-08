@@ -291,6 +291,9 @@ class Orchestrator:
                 logger.warning("Price stream is STALE (>30s without a message) "
                                "— exits are falling back to REST prices")
                 self._ws_warned_at = now
+                # Don't just complain — kick the zombie socket so the stream's
+                # run-loop reconnects immediately instead of waiting out backoff.
+                self.price_stream.kick()
 
         equity = self._equity()   # cash + open positions — drives risk/kill-switch
         free = self._free()       # un-deployed cash — drives position sizing
