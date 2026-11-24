@@ -11,6 +11,9 @@ mt5:
   server_utc_offset_hours: 0   # Exness MT5 server time is UTC (GMT+0)
   magic: 7140001               # tags this bot's orders so it never touches yours
   deviation_points: 30         # max slippage accepted on market orders
+  bridge:                      # macOS: the MT5 bridge running in Wine (scripts/mac/start_bridge.sh)
+    host: 127.0.0.1
+    port: 18812
 
 loop_seconds: 5                # how often to poll; signals are only read on new M1 closes
 
@@ -55,8 +58,8 @@ risk:
 journal:
   path: journal/journal.db
 
-telegram:
-  enabled: false               # token + chat id go in .env
+imessage:
+  enabled: false               # recipient (phone or Apple ID email) goes in .env as IMESSAGE_TO
 
 backtest:
   spread:                      # price units, used when the data has no spread column

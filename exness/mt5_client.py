@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +18,20 @@ _TIMEFRAMES = {"M1": "TIMEFRAME_M1", "M5": "TIMEFRAME_M5", "M15": "TIMEFRAME_M15
 
 class Mt5Error(RuntimeError):
     pass
+
+
+def _load_mt5(bridge: dict):
+    if sys.platform == "win32":
+        try:
+            import MetaTrader5  # noqa: N813
+            return MetaTrader5
+        except ImportError as e:
+            raise Mt5Error("MetaTrader5 package not installed: pip install MetaTrader5") from e
+    from exness.bridge_client import BridgeError, RemoteMt5
+    try:
+        return RemoteMt5(**bridge)
+    except BridgeError as e:
+        raise Mt5Error(str(e)) from e
 
 
 @dataclass(frozen=True)
@@ -37,14 +52,11 @@ class ClosedTrade:
 
 class Mt5Client:
     def __init__(self, server_utc_offset_hours: float = 0, magic: int = 7140001,
-                 deviation_points: int = 30, module=None):
+                 deviation_points: int = 30, module=None, bridge: dict | None = None):
+        """module: a MetaTrader5-like object (tests). Otherwise the real package on
+        Windows, or the Wine bridge (bridge = {host, port, key}) everywhere else."""
         if module is None:
-            try:
-                import MetaTrader5 as module  # noqa: N813
-            except ImportError as e:
-                raise Mt5Error(
-                    "MetaTrader5 package not installed. It only runs on Windows next to the "
-                    "MT5 desktop terminal: pip install MetaTrader5") from e
+            module = _load_mt5(bridge or {})
         self.mt5 = module
         self.offset = timedelta(hours=server_utc_offset_hours)
         self.magic = magic

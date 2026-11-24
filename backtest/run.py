@@ -2,7 +2,7 @@
 Replay M1 history through the same SMC signals and risk rules the bot uses.
 
     python -m backtest.run --symbol XAUUSD --csv XAUUSD_M1.csv
-    python -m backtest.run --symbol XAUUSD --mt5 --days 30      (Windows, MT5 open)
+    python -m backtest.run --symbol XAUUSD --mt5 --days 30      (MT5 + bridge running)
 
 CSV: an MT5 export (Tools > History Center / Symbols > Bars > Export, tab-separated
 <DATE> <TIME> <OPEN> ...), or any CSV with time,open,high,low,close columns.
@@ -178,9 +178,9 @@ def main(argv=None):
     if args.csv:
         m1 = load_csv(args.csv, offset)
     else:
-        from config.settings import mt5_credentials
+        from config.settings import bridge_settings, mt5_credentials
         from exness.mt5_client import Mt5Client
-        client = Mt5Client(offset)
+        client = Mt5Client(offset, bridge=bridge_settings(cfg))
         client.connect(**mt5_credentials())
         end = datetime.now(timezone.utc)
         m1 = client.history(client.resolve_symbol(args.symbol), "M1",

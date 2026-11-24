@@ -36,5 +36,14 @@ def mt5_credentials() -> dict:
     }
 
 
-def telegram_credentials() -> dict:
-    return {"token": _env("TELEGRAM_TOKEN"), "chat_id": _env("TELEGRAM_CHAT_ID")}
+def bridge_settings(cfg: dict) -> dict:
+    b = (cfg.get("mt5") or {}).get("bridge") or {}
+    return {
+        "host": _env("MT5_BRIDGE_HOST") or b.get("host", "127.0.0.1"),
+        "port": int(_env("MT5_BRIDGE_PORT") or b.get("port", 18812)),
+        "key": _env("MT5_BRIDGE_KEY"),
+    }
+
+
+def imessage_recipient() -> str:
+    return _env("IMESSAGE_TO")

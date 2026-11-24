@@ -1,7 +1,8 @@
 """
 python -m bot.main [--mode dry-run|demo|live] [--once]
 
-Needs the MT5 terminal open and logged in to your Exness account (Windows).
+On macOS, the MT5 terminal and bridge must be running in Wine first
+(scripts/mac/start_bridge.sh), logged in to your Exness account.
 """
 
 import argparse
@@ -10,7 +11,7 @@ import time
 
 from bot.engine import Engine
 from bot.notifier import Notifier
-from config.settings import ROOT, load_config, mt5_credentials, telegram_credentials
+from config.settings import ROOT, bridge_settings, imessage_recipient, load_config, mt5_credentials
 from exness.mt5_client import Mt5Client
 from execution.executor import MODES, DryRunExecutor, Mt5Executor, check_mode
 from journal.store import Journal
@@ -40,7 +41,7 @@ def main(argv=None):
     m = cfg.get("mt5", {})
 
     client = Mt5Client(m.get("server_utc_offset_hours", 0), m.get("magic", 7140001),
-                       m.get("deviation_points", 30))
+                       m.get("deviation_points", 30), bridge=bridge_settings(cfg))
     client.connect(**mt5_credentials())
     acct = client.account()
     demo = client.is_demo(acct)
@@ -49,8 +50,7 @@ def main(argv=None):
     check_mode(mode, demo, allow_live)  # refuse to start in the wrong place
 
     executor = DryRunExecutor() if mode == "dry-run" else Mt5Executor(client, mode, allow_live)
-    tg = telegram_credentials()
-    notifier = Notifier(cfg.get("telegram", {}).get("enabled", False), tg["token"], tg["chat_id"])
+    notifier = Notifier(cfg.get("imessage", {}).get("enabled", False), imessage_recipient())
     journal = Journal(ROOT / cfg.get("journal", {}).get("path", "journal/journal.db"))
     engine = Engine(cfg, client, executor, journal, notifier, root=ROOT)
     notifier.send(f"Bot started in {mode} mode on account {acct.login}")
@@ -68,6 +68,7 @@ def main(argv=None):
         log.info("stopped")
     finally:
         client.shutdown()
+        notifier.flush()
 
 
 if __name__ == "__main__":

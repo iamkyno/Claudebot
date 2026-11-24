@@ -1,6 +1,5 @@
-# MetaTrader5 only installs on Windows, next to the MT5 desktop terminal.
+# On macOS the MetaTrader5 package lives in Wine (scripts/mac/setup_wine.sh), not here.
 MetaTrader5>=5.0.45; sys_platform == "win32"
 pyyaml>=6.0
 python-dotenv>=1.0
-requests>=2.31
 pytest>=8.0

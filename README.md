@@ -4,8 +4,14 @@ Scalps **XAUUSD** and **BTCUSD** on an Exness MT5 account using smart-money conc
 M5 market structure sets the direction, M1 times the entry. Built from the
 [Exness Scalping Execution Script plan](https://claude.ai/artifact/KpyhnAw33Q7hPt3LtrVn6v).
 
-It talks to the MT5 desktop terminal through the official `MetaTrader5` Python
-package, so it never handles your Exness website password and doesn't need API keys.
+It runs on a Mac. The MT5 terminal and the `MetaTrader5` Python package are Windows-only,
+so they run inside Wine, and the bot (normal macOS Python) reaches them through a small
+local bridge on `127.0.0.1`. It never handles your Exness website password and needs no
+API keys. Alerts go to your phone over iMessage.
+
+```
+macOS Python: bot, journal, iMessage  <-- 127.0.0.1:18812, shared key -->  Wine: bridge + MetaTrader5 package + MT5 terminal
+```
 
 ## How a trade happens
 
@@ -38,28 +44,49 @@ Each setup trades once. Every number above is in `config/config.yaml`.
 | `demo` | Sends real orders, but **refuses unless MT5 is logged into a demo account**. Re-checked on every order |
 | `live` | Real money. Also needs `allow_live: true` in the config |
 
-## Setup (Windows)
+## Mac setup
 
-1. Install the Exness **MT5 desktop terminal**, log in (demo first), and turn on
-   *Tools → Options → Expert Advisors → Allow algorithmic trading*.
-2. Install Python 3.11+ and run `run.bat`. It creates a venv, installs requirements
-   and starts the bot in dry-run.
-3. Optional: `copy .env.example .env` for Telegram alerts, or for MT5 login details if you
-   want the bot to log in for you. Leave the MT5 lines blank to use the terminal you're
-   already logged into.
+1. **Install Wine.** Any recent 64-bit Wine works. Options include Gcenx's macOS Wine
+   builds, CrossOver, or a Homebrew cask if one is still available. Apple Silicon Macs
+   also need Rosetta 2 (`softwareupdate --install-rosetta`). If `wine64`/`wine` isn't on
+   your PATH, set `WINE=/path/to/wine` before the next steps.
+2. **One-time setup:**
+   ```bash
+   scripts/mac/setup_wine.sh
+   ```
+   This creates a Wine prefix at `~/.wine-mt5`, installs Windows Python 3.11 and the
+   `MetaTrader5` package into it, and opens the MT5 installer. Install it, then log in to
+   your **Exness demo** account (File → Login to Trade Account; search "Exness" for the
+   server), and turn on *Algo Trading* in the toolbar. It also writes `MT5_BRIDGE_KEY` to `.env`.
+3. **Start MT5 and the bridge** (leave this window open):
+   ```bash
+   scripts/mac/start_bridge.sh
+   ```
+4. **Start the bot** in another window (dry-run by default):
+   ```bash
+   ./run.sh
+   ```
+   `run.sh` keeps the Mac awake with `caffeinate`. The Mac still sleeps if you close the
+   lid (unless it's on power with an external display), and BTC trades 24/7, so leave it open.
 
 Exness symbol suffixes (`XAUUSDm` on Standard accounts) are found automatically.
 
-```bat
-python -m bot.main                 :: mode from config (dry-run)
-python -m bot.main --mode demo     :: demo orders
-python -m bot.main --once          :: single pass, then exit
+```bash
+./run.sh --mode demo     # demo orders
+./run.sh --once          # single pass, then exit
 ```
+
+### iMessage alerts
+
+Set `IMESSAGE_TO` in `.env` to your phone number (`+27…`) or Apple ID email, and
+`imessage.enabled: true` in the config. The Mac must be signed in to Messages. The first
+alert makes macOS ask whether Terminal may control Messages: allow it. You'll get trade
+opens and closes, refused or failed orders, and the daily loss stop.
 
 ## Testing one trade
 
 1. Run dry-run for a session and compare the logged signals against your charts.
-2. Switch MT5 to your demo account and run `python -m bot.main --mode demo`. Set
+2. Switch MT5 to your demo account and run `./run.sh --mode demo`. Set
    `risk_per_trade_pct` low so the first order is near 0.01 lots, watch it appear in MT5,
    then close it.
 
@@ -68,8 +95,8 @@ python -m bot.main --once          :: single pass, then exit
 Replays M1 history through the same signal and risk code. Results are in R
 (multiples of the stop distance).
 
-```bat
-python -m backtest.run --symbol XAUUSD --mt5 --days 30
+```bash
+python -m backtest.run --symbol XAUUSD --mt5 --days 30      # bridge must be running
 python -m backtest.run --symbol XAUUSD --csv XAUUSD_M1.csv --trades-csv trades.csv
 ```
 
@@ -86,14 +113,16 @@ and its closed P/L goes to `journal/journal.db` (SQLite).
 ## Layout
 
 ```
-bot/         main loop, engine, Telegram notifier
+bot/         main loop, engine, iMessage notifier
+bridge/      MT5 bridge server (runs in Wine)
+scripts/mac/ Wine setup and bridge launcher
 signals/     SMC swing, structure, sweep, FVG logic (pure Python)
 risk/        risk guard, lot sizing, SAST sessions
 execution/   dry-run and MT5 executors and the mode checks
-exness/      MetaTrader5 wrapper
+exness/      MetaTrader5 wrapper and bridge client
 journal/     SQLite journal and CSV export
 backtest/    M1 replay
-tests/       pytest suite (runs on any OS; MT5 is faked)
+tests/       pytest suite (MT5 is faked, so it runs without Wine)
 ```
 
 Run the tests with `python -m pytest`.
