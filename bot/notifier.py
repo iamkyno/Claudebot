@@ -1,74 +1,30 @@
+"""Telegram alerts. Without a token everything just goes to the log."""
+
 import logging
 
-logger = logging.getLogger(__name__)
+import requests
 
-try:
-    import asyncio
-    from telegram import Bot
-    _TELEGRAM_OK = True
-except ImportError:
-    _TELEGRAM_OK = False
+log = logging.getLogger(__name__)
 
 
 class Notifier:
-    def __init__(self, config: dict):
-        self.enabled = config.get("enabled", False) and _TELEGRAM_OK
-        self._bot = None
-        if self.enabled:
-            token = config.get("token", "")
-            self.chat_id = config.get("chat_id", "")
-            if token and self.chat_id:
-                self._bot = Bot(token=token)
-            else:
-                self.enabled = False
+    def __init__(self, enabled: bool, token: str = "", chat_id: str = ""):
+        self.enabled = bool(enabled and token and chat_id)
+        self.token, self.chat_id = token, chat_id
 
     def send(self, text: str):
-        if not self.enabled or not self._bot:
-            logger.info(f"[NOTIFY] {text}")
+        log.info(f"[notify] {text}")
+        if not self.enabled:
             return
         try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(
-                self._bot.send_message(chat_id=self.chat_id, text=text, parse_mode="Markdown")
-            )
-            loop.close()
-        except Exception as e:
-            logger.warning(f"Telegram send failed: {e}")
+            requests.post(f"https://api.telegram.org/bot{self.token}/sendMessage",
+                          json={"chat_id": self.chat_id, "text": text}, timeout=10)
+        except requests.RequestException as e:
+            log.warning(f"Telegram send failed: {e}")
 
-    def trade_opened(self, symbol: str, side: str, price: float, qty: float,
-                      strategy: str, confidence: float, stop: float, tp: float):
-        icon = "🟢" if side == "buy" else "🔴"
-        self.send(
-            f"{icon} *{side.upper()} {symbol}*\n"
-            f"Strategy: `{strategy}`\n"
-            f"Price: `${price:,.4f}` | Qty: `{qty:.6f}`\n"
-            f"Stop: `${stop:,.4f}` | TP: `${tp:,.4f}`\n"
-            f"ML Confidence: `{confidence:.1%}`"
-        )
+    def trade_opened(self, mode, symbol, side, volume, price, sl, tp, reason):
+        self.send(f"[{mode}] {side.upper()} {volume} {symbol} @ {price:.5g}\n"
+                  f"SL {sl:.5g}  TP {tp:.5g}\n{reason}")
 
-    def trade_closed(self, symbol: str, pnl: float, pnl_pct: float, strategy: str):
-        icon = "✅" if pnl >= 0 else "❌"
-        self.send(
-            f"{icon} *CLOSED {symbol}*\n"
-            f"Strategy: `{strategy}`\n"
-            f"PnL: `${pnl:+.4f}` (`{pnl_pct:+.2%}`)"
-        )
-
-    def kill_switch(self, reason: str):
-        self.send(f"🚨 *KILL SWITCH*\n`{reason}`\nAll trading halted.")
-
-    def model_retrained(self, version: int, accuracy: float, f1: float, samples: int):
-        self.send(
-            f"🤖 *ML Retrained v{version}*\n"
-            f"Accuracy: `{accuracy:.3f}` | F1: `{f1:.3f}`\n"
-            f"Samples: `{samples}`"
-        )
-
-    def daily_report(self, balance: float, pnl: float, win_rate: float, trades: int):
-        icon = "📈" if pnl >= 0 else "📉"
-        self.send(
-            f"{icon} *Daily Report*\n"
-            f"Balance: `${balance:,.2f}`\n"
-            f"PnL: `${pnl:+,.2f}` | Win Rate: `{win_rate:.1%}`\n"
-            f"Trades: `{trades}`"
-        )
+    def trade_closed(self, mode, symbol, profit):
+        self.send(f"[{mode}] CLOSED {symbol}  P/L {profit:+.2f}")
