@@ -4,25 +4,32 @@ from __future__ import annotations
 
 import logging
 
-from exness.mt5_client import OrderResult
+from exness.api import OrderResult
 
 log = logging.getLogger(__name__)
 
-MODES = ("dry-run", "demo", "live")
+MODES = ("dry-run", "live")
 
 
 class ModeError(RuntimeError):
     pass
 
 
-def check_mode(mode: str, is_demo: bool, allow_live: bool) -> None:
+def check_mode(mode: str, account_id: str, cfg: dict) -> None:
+    """Live needs allow_live AND the API key's account pinned in config.
+
+    The Exness API has no demo/real flag, so the safety is: you name the one
+    account you mean to trade, and nothing else gets an order.
+    """
     if mode not in MODES:
         raise ModeError(f"Unknown mode {mode!r}; use one of {MODES}")
-    if mode == "demo" and not is_demo:
-        raise ModeError("Demo mode, but MT5 is logged into a REAL account. "
-                        "Switch to your Exness demo account in MT5 first.")
-    if mode == "live" and not allow_live:
-        raise ModeError("Live mode needs allow_live: true in config/config.yaml.")
+    if mode == "live":
+        if not cfg.get("allow_live"):
+            raise ModeError("Live mode needs allow_live: true in config/config.yaml.")
+        pinned = str(cfg.get("live_account_id") or "").strip()
+        if pinned != str(account_id):
+            raise ModeError(f"live_account_id in config.yaml ({pinned or 'not set'}) doesn't "
+                            f"match EXN_ACCOUNT_ID ({account_id}). Refusing to trade.")
 
 
 class DryRunExecutor:
@@ -37,20 +44,19 @@ class DryRunExecutor:
         return OrderResult(True, None, 0.0, 0.0, "dry-run")
 
 
-class Mt5Executor:
-    def __init__(self, client, mode: str, allow_live: bool):
-        if mode == "dry-run":
-            raise ModeError("Use DryRunExecutor for dry-run")
-        self.client, self.mode, self.allow_live = client, mode, allow_live
+class LiveExecutor:
+    mode = "live"
+
+    def __init__(self, client, cfg: dict):
+        self.client, self.cfg = client, cfg
 
     def _guard(self):
-        # Re-checked on every order: the account can be switched while the bot runs.
-        check_mode(self.mode, self.client.is_demo(), self.allow_live)
+        check_mode("live", self.client.account_id, self.cfg)  # re-checked on every order
 
     def place(self, symbol, side, volume, sl, tp, entry, comment="") -> OrderResult:
         self._guard()
         res = self.client.market_order(symbol, side, volume, sl, tp, comment)
-        log.info(f"[{self.mode}] {side.upper()} {volume} {symbol} -> {res.message}")
+        log.info(f"[live] {side.upper()} {volume} {symbol} -> {res.message}")
         return res
 
     def close(self, pos) -> OrderResult:

@@ -45,8 +45,10 @@ SPEC = SymbolSpec(volume_min=0.01, volume_max=100, volume_step=0.01, tick_size=0
 class FakeClient:
     """Stands in for Mt5Client in engine tests."""
 
-    def __init__(self, m1, m5, demo=True, bid=102.95, ask=103.0, equity=10_000.0):
-        self.m1, self.m5, self.demo = m1, m5, demo
+    account_id = "123456"
+
+    def __init__(self, m1, m5, bid=102.95, ask=103.0, equity=10_000.0):
+        self.m1, self.m5 = m1, m5
         self.bid, self.ask, self.equity = bid, ask, equity
         self.orders, self.open_positions = [], []
 
@@ -54,11 +56,7 @@ class FakeClient:
         return base + "m"
 
     def account(self):
-        return SimpleNamespace(equity=self.equity, login=1, server="Exness-MT5Trial",
-                               currency="USD", trade_mode=0 if self.demo else 2)
-
-    def is_demo(self, info=None):
-        return self.demo
+        return SimpleNamespace(equity=self.equity, login=self.account_id, currency="USD")
 
     def rates(self, symbol, tf, count):
         return self.m1 if tf == "M1" else self.m5
@@ -73,18 +71,18 @@ class FakeClient:
         return [p for p in self.open_positions if symbol is None or p.symbol == symbol]
 
     def market_order(self, symbol, side, volume, sl, tp, comment=""):
-        from exness.mt5_client import OrderResult
+        from exness.api import OrderResult
         self.orders.append((symbol, side, volume, sl, tp))
         ticket = 1000 + len(self.orders)
-        self.open_positions.append(SimpleNamespace(ticket=ticket, symbol=symbol, type=0,
+        self.open_positions.append(SimpleNamespace(ticket=ticket, symbol=symbol, type=side,
                                                    volume=volume))
         return OrderResult(True, ticket, self.ask, volume, "10009 done")
 
     def close_position(self, pos):
-        from exness.mt5_client import OrderResult
+        from exness.api import OrderResult
         self.open_positions.remove(pos)
         return OrderResult(True, pos.ticket, self.bid, pos.volume, "closed")
 
-    def closed_result(self, ticket):
-        from exness.mt5_client import ClosedTrade
+    def closed_result(self, ticket, since):
+        from exness.api import ClosedTrade
         return ClosedTrade(T0 + timedelta(minutes=5), 104.0, 12.5)

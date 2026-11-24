@@ -2,7 +2,7 @@
 Replay M1 history through the same SMC signals and risk rules the bot uses.
 
     python -m backtest.run --symbol XAUUSD --csv XAUUSD_M1.csv
-    python -m backtest.run --symbol XAUUSD --mt5 --days 30      (MT5 + bridge running)
+    python -m backtest.run --symbol XAUUSD --api --days 30      (pulls M1 from the Exness API)
 
 CSV: an MT5 export (Tools > History Center / Symbols > Bars > Export, tab-separated
 <DATE> <TIME> <OPEN> ...), or any CSV with time,open,high,low,close columns.
@@ -167,25 +167,25 @@ def main(argv=None):
     ap.add_argument("--symbol", required=True, help="base name from config, e.g. XAUUSD")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--csv")
-    src.add_argument("--mt5", action="store_true")
+    src.add_argument("--api", action="store_true")
     ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--utc-offset", type=float, help="hours the CSV times are ahead of UTC")
     ap.add_argument("--spread", type=float, help="price units; default from config")
     ap.add_argument("--trades-csv", help="write every simulated trade here")
     args = ap.parse_args(argv)
 
     cfg = load_config()
-    offset = cfg.get("mt5", {}).get("server_utc_offset_hours", 0)
+    offset = 0  # CSV times are UTC; MT5 exports may need --utc-offset
     if args.csv:
-        m1 = load_csv(args.csv, offset)
+        m1 = load_csv(args.csv, args.utc_offset if args.utc_offset is not None else offset)
     else:
-        from config.settings import bridge_settings, mt5_credentials
-        from exness.mt5_client import Mt5Client
-        client = Mt5Client(offset, bridge=bridge_settings(cfg))
-        client.connect(**mt5_credentials())
-        end = datetime.now(timezone.utc)
+        from config.settings import exness_credentials
+        from exness.api import ExnessApi
+        client = ExnessApi(**exness_credentials())  # read-only use
+        client.connect()
+        end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         m1 = client.history(client.resolve_symbol(args.symbol), "M1",
                             end - timedelta(days=args.days), end)
-        client.shutdown()
 
     sym_cfg = (cfg.get("symbols") or {}).get(args.symbol, {}) or {}
     spread = args.spread if args.spread is not None else \

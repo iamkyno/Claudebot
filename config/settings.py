@@ -25,23 +25,17 @@ def _env(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
-def mt5_credentials() -> dict:
-    """Blank login means: attach to the terminal that is already logged in."""
-    login = _env("MT5_LOGIN")
+def exness_credentials() -> dict:
+    """From .env. EXN_PRIVATE_KEY may instead be a file path in EXN_PRIVATE_KEY_FILE (PEM)."""
+    key = _env("EXN_PRIVATE_KEY")
+    key_file = _env("EXN_PRIVATE_KEY_FILE")
+    if not key and key_file:
+        key = Path(key_file).expanduser().read_text(encoding="utf-8")
     return {
-        "login": int(login) if login else None,
-        "password": _env("MT5_PASSWORD"),
-        "server": _env("MT5_SERVER"),
-        "path": _env("MT5_PATH"),
-    }
-
-
-def bridge_settings(cfg: dict) -> dict:
-    b = (cfg.get("mt5") or {}).get("bridge") or {}
-    return {
-        "host": _env("MT5_BRIDGE_HOST") or b.get("host", "127.0.0.1"),
-        "port": int(_env("MT5_BRIDGE_PORT") or b.get("port", 18812)),
-        "key": _env("MT5_BRIDGE_KEY"),
+        "api_key": _env("EXN_API_KEY"),
+        "private_key": key,
+        "account_id": _env("EXN_ACCOUNT_ID"),
+        "gateway": _env("EXN_DISCOVERY_BASE_URL"),
     }
 
 

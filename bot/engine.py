@@ -63,7 +63,8 @@ class Engine:
                     res = self.executor.close(pos)
                     log.info(f"{order['symbol']}: time stop after {self.max_hold} -> {res.message}")
                 continue
-            closed = self.client.closed_result(order["ticket"])
+            closed = self.client.closed_result(order["ticket"],
+                                               datetime.fromisoformat(order["opened_at"]))
             if closed:
                 self.journal.close_order(order["id"], closed.exit_time, closed.exit_price,
                                          closed.profit)
@@ -99,7 +100,7 @@ class Engine:
         decision = self.guard.evaluate(sig, ctx, self.sessions[name], spec)
         if decision.ok:
             volume = lot_size(equity, self.risk_cfg.get("risk_per_trade_pct", 0.5),
-                              sig.entry, sig.sl, spec)
+                              sig.entry, sig.sl, spec, self.risk_cfg.get("max_lots_per_trade"))
             if volume <= 0:
                 decision = Decision(False, "risk budget below the minimum lot")
         if not decision.ok:
@@ -117,6 +118,11 @@ class Engine:
             self.journal.set_decision(sid, "refused", str(e))
             log.error(str(e))
             self.notifier.send(f"Order refused: {e}")
+            return
+        except Exception as e:  # API/network error: record it, don't lose the signal
+            self.journal.set_decision(sid, "failed", str(e))
+            log.exception(f"{name}: order failed")
+            self.notifier.send(f"{name} order failed: {e}")
             return
         if not res.ok:
             self.journal.set_decision(sid, "failed", res.message)

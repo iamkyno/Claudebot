@@ -1,23 +1,23 @@
 # Exness SMC scalper — MetaTrader 5
 #
 # mode:
-#   dry-run  only logs "would BUY 0.01 XAUUSD SL… TP…" (default, safe)
-#   demo     sends real orders, but refuses unless MT5 is on a DEMO account
-#   live     real money; also needs allow_live: true below
+#   dry-run  reads live prices and logs "would BUY 0.01 XAUUSD SL… TP…", sends nothing (default).
+#            Use a READ-ONLY API key for this: then the server itself refuses orders.
+#   live     sends real orders. Needs allow_live: true AND live_account_id set to the exact
+#            account the API key trades. The Exness API has no demo/real flag, so this pin
+#            is what stops the bot trading an account you didn't mean.
 mode: dry-run
 allow_live: false
+live_account_id: ""
 
-mt5:
-  server_utc_offset_hours: 0   # Exness MT5 server time is UTC (GMT+0)
-  magic: 7140001               # tags this bot's orders so it never touches yours
-  deviation_points: 30         # max slippage accepted on market orders
-  bridge:                      # macOS: the MT5 bridge running in Wine (scripts/mac/start_bridge.sh)
-    host: 127.0.0.1
-    port: 18812
+api:
+  user_agent: Claudebot/2.0    # Exness asks for a meaningful User-Agent
+  order_timeout_seconds: 20    # how long to wait for an order to confirm
+  deviation_points: 30         # only used on instant-execution instruments
 
 loop_seconds: 5                # how often to poll; signals are only read on new M1 closes
 
-# Base names. Exness suffixes (e.g. XAUUSDm on Standard accounts) are found automatically.
+# Base names. Suffixed instrument names (e.g. XAUUSDm) are found automatically.
 # Sessions are in SAST (UTC+2). "always" = 24/7.
 symbols:
   XAUUSD:
@@ -48,6 +48,7 @@ strategy:
 
 risk:
   risk_per_trade_pct: 0.5      # % of equity lost if the stop is hit
+  max_lots_per_trade: 0.01     # hard cap while testing; raise it deliberately
   max_trades_per_day: 6        # per SAST day, all symbols
   max_daily_loss_pct: 2.0      # equity drawdown from the SAST day's start that halts trading
   max_spread_to_sl: 0.25       # skip if spread > 25% of the stop distance

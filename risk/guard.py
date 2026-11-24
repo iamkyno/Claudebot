@@ -65,8 +65,10 @@ def in_session(now_utc: datetime, sessions) -> bool:
     return False
 
 
-def lot_size(equity: float, risk_pct: float, entry: float, sl: float, spec: SymbolSpec) -> float:
-    """Lots so a stop-out loses risk_pct of equity. Rounds DOWN; 0 if below the broker minimum."""
+def lot_size(equity: float, risk_pct: float, entry: float, sl: float, spec: SymbolSpec,
+             max_lots: float | None = None) -> float:
+    """Lots so a stop-out loses risk_pct of equity. Rounds DOWN; 0 if below the broker minimum.
+    max_lots caps it further (e.g. 0.01 while testing)."""
     dist = abs(entry - sl)
     if dist <= 0 or spec.tick_size <= 0 or spec.tick_value <= 0 or spec.volume_step <= 0:
         return 0.0
@@ -74,7 +76,8 @@ def lot_size(equity: float, risk_pct: float, entry: float, sl: float, spec: Symb
     raw = equity * risk_pct / 100.0 / loss_per_lot
     steps = math.floor(raw / spec.volume_step + 1e-9)
     decimals = max(0, -int(math.floor(math.log10(spec.volume_step))))
-    lots = round(min(steps * spec.volume_step, spec.volume_max), decimals)
+    cap = min(spec.volume_max, max_lots) if max_lots else spec.volume_max
+    lots = round(min(steps * spec.volume_step, cap), decimals)
     return lots if lots >= spec.volume_min else 0.0
 
 

@@ -1,8 +1,7 @@
 """
-python -m bot.main [--mode dry-run|demo|live] [--once]
+python -m bot.main [--mode dry-run|live] [--once]
 
-On macOS, the MT5 terminal and bridge must be running in Wine first
-(scripts/mac/start_bridge.sh), logged in to your Exness account.
+Talks to the Exness Trader API with the key in .env (see README).
 """
 
 import argparse
@@ -11,9 +10,9 @@ import time
 
 from bot.engine import Engine
 from bot.notifier import Notifier
-from config.settings import ROOT, bridge_settings, imessage_recipient, load_config, mt5_credentials
-from exness.mt5_client import Mt5Client
-from execution.executor import MODES, DryRunExecutor, Mt5Executor, check_mode
+from config.settings import ROOT, exness_credentials, imessage_recipient, load_config
+from exness.api import ExnessApi
+from execution.executor import MODES, DryRunExecutor, LiveExecutor, check_mode
 from journal.store import Journal
 
 log = logging.getLogger("bot")
@@ -29,7 +28,7 @@ def _setup_logging():
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Exness SMC scalper (MT5)")
+    ap = argparse.ArgumentParser(description="Exness SMC scalper (Trader API)")
     ap.add_argument("--mode", choices=MODES, help="overrides mode in config.yaml")
     ap.add_argument("--once", action="store_true", help="run a single pass and exit")
     args = ap.parse_args(argv)
@@ -37,19 +36,19 @@ def main(argv=None):
     _setup_logging()
     cfg = load_config()
     mode = args.mode or cfg.get("mode", "dry-run")
-    allow_live = bool(cfg.get("allow_live", False))
-    m = cfg.get("mt5", {})
+    api = cfg.get("api", {})
 
-    client = Mt5Client(m.get("server_utc_offset_hours", 0), m.get("magic", 7140001),
-                       m.get("deviation_points", 30), bridge=bridge_settings(cfg))
-    client.connect(**mt5_credentials())
+    check_mode(mode, exness_credentials()["account_id"], cfg)  # refuse before connecting
+    client = ExnessApi(**exness_credentials(), allow_trading=(mode == "live"),
+                       user_agent=api.get("user_agent", "Claudebot/2.0"),
+                       order_timeout=api.get("order_timeout_seconds", 20),
+                       deviation_points=api.get("deviation_points", 30))
+    details = client.connect()
     acct = client.account()
-    demo = client.is_demo(acct)
-    log.info(f"MT5 account {acct.login} on {acct.server} "
-             f"({'DEMO' if demo else 'REAL'}), equity {acct.equity:.2f} {acct.currency}")
-    check_mode(mode, demo, allow_live)  # refuse to start in the wrong place
+    log.info(f"Exness account {acct.login} ({details.get('account_name', '')}), "
+             f"equity {acct.equity:.2f} {acct.currency}, access point {client.access_point}")
 
-    executor = DryRunExecutor() if mode == "dry-run" else Mt5Executor(client, mode, allow_live)
+    executor = DryRunExecutor() if mode == "dry-run" else LiveExecutor(client, cfg)
     notifier = Notifier(cfg.get("imessage", {}).get("enabled", False), imessage_recipient())
     journal = Journal(ROOT / cfg.get("journal", {}).get("path", "journal/journal.db"))
     engine = Engine(cfg, client, executor, journal, notifier, root=ROOT)

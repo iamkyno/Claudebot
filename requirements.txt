@@ -1,5 +1,4 @@
-# On macOS the MetaTrader5 package lives in Wine (scripts/mac/setup_wine.sh), not here.
-MetaTrader5>=5.0.45; sys_platform == "win32"
+cryptography>=42      # Ed25519 request signing
 pyyaml>=6.0
 python-dotenv>=1.0
 pytest>=8.0
