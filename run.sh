@@ -3,7 +3,10 @@
 # Needs scripts/mac/start_bridge.sh running in another window.
 set -e
 cd "$(dirname "$0")"
-[ -d venv ] || python3 -m venv venv
+for PY in python3.12 python3.11 python3.10 python3; do command -v "$PY" >/dev/null && break; done
+"$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+  || { echo "Python 3.10+ needed: run scripts/mac/setup_wine.sh (or brew install python@3.12)"; exit 1; }
+[ -d venv ] || "$PY" -m venv venv
 # shellcheck disable=SC1091
 source venv/bin/activate
 pip install --quiet -r requirements.txt

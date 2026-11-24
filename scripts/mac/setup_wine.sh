@@ -1,8 +1,39 @@
 #!/usr/bin/env bash
-# One-time setup: Windows Python + MetaTrader5 package + the MT5 terminal, in a
-# dedicated Wine prefix (~/.wine-mt5), plus the bridge key in .env.
+# One-time setup. Installs (only what's missing): Homebrew, Rosetta 2, Wine,
+# Python 3.12, then Windows Python + the MetaTrader5 package + the MT5 terminal
+# in a dedicated Wine prefix (~/.wine-mt5), and writes the bridge key to .env.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+
+# --- Homebrew ------------------------------------------------------------------
+if ! command -v brew >/dev/null; then
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && eval "$("$b" shellenv)"; done
+fi
+if ! command -v brew >/dev/null; then
+  echo "Installing Homebrew (it will ask for your Mac password) ..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && eval "$("$b" shellenv)"; done
+fi
+
+# --- Rosetta 2 (Apple Silicon only; the Wine build is Intel) ---------------------
+if [ "$(uname -m)" = "arm64" ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+  echo "Installing Rosetta 2 ..."
+  softwareupdate --install-rosetta --agree-to-license
+fi
+
+# --- Wine ----------------------------------------------------------------------
+# Homebrew's own wine casks were disabled on 2026-09-01 (Gatekeeper); the
+# maintainer's tap still ships the same builds.
+if ! command -v wine >/dev/null && ! command -v wine64 >/dev/null; then
+  echo "Installing Wine (gcenx/wine/wine-stable) ..."
+  brew install --cask gcenx/wine/wine-stable
+  # Unsigned app: clear the quarantine flag so macOS lets it run.
+  xattr -dr com.apple.quarantine "/Applications/Wine Stable.app" 2>/dev/null || true
+fi
+
+# --- Mac-side Python for the bot -------------------------------------------------
+command -v python3.12 >/dev/null || brew install python@3.12
+
 source scripts/mac/wine_env.sh
 
 mkdir -p .cache/wine

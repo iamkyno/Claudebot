@@ -46,23 +46,21 @@ Each setup trades once. Every number above is in `config/config.yaml`.
 
 ## Mac setup
 
-1. **Install Wine.** Any recent 64-bit Wine works. Options include Gcenx's macOS Wine
-   builds, CrossOver, or a Homebrew cask if one is still available. Apple Silicon Macs
-   also need Rosetta 2 (`softwareupdate --install-rosetta`). If `wine64`/`wine` isn't on
-   your PATH, set `WINE=/path/to/wine` before the next steps.
-2. **One-time setup:**
+1. **One-time setup:**
    ```bash
    scripts/mac/setup_wine.sh
    ```
-   This creates a Wine prefix at `~/.wine-mt5`, installs Windows Python 3.11 and the
+   This installs whatever is missing: Homebrew, Rosetta 2 (Apple Silicon), Wine
+   (`brew install --cask gcenx/wine/wine-stable`, because Homebrew's own Wine casks were
+   disabled in September 2026) and Python 3.12. Then it creates a Wine prefix at `~/.wine-mt5`, installs Windows Python 3.11 and the
    `MetaTrader5` package into it, and opens the MT5 installer. Install it, then log in to
    your **Exness demo** account (File → Login to Trade Account; search "Exness" for the
    server), and turn on *Algo Trading* in the toolbar. It also writes `MT5_BRIDGE_KEY` to `.env`.
-3. **Start MT5 and the bridge** (leave this window open):
+2. **Start MT5 and the bridge** (leave this window open):
    ```bash
    scripts/mac/start_bridge.sh
    ```
-4. **Start the bot** in another window (dry-run by default):
+3. **Start the bot** in another window (dry-run by default):
    ```bash
    ./run.sh
    ```
