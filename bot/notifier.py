@@ -1,74 +1,60 @@
+"""iMessage alerts through macOS Messages. When off, everything just goes to the log."""
+
 import logging
+import subprocess
+import sys
+import threading
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
-try:
-    import asyncio
-    from telegram import Bot
-    _TELEGRAM_OK = True
-except ImportError:
-    _TELEGRAM_OK = False
+# Message text and recipient are passed as arguments, never pasted into the script.
+_SCRIPT = """on run argv
+  tell application "Messages"
+    set svc to 1st account whose service type = iMessage
+    send (item 1 of argv) to participant (item 2 of argv) of svc
+  end tell
+end run"""
 
 
 class Notifier:
-    def __init__(self, config: dict):
-        self.enabled = config.get("enabled", False) and _TELEGRAM_OK
-        self._bot = None
-        if self.enabled:
-            token = config.get("token", "")
-            self.chat_id = config.get("chat_id", "")
-            if token and self.chat_id:
-                self._bot = Bot(token=token)
-            else:
-                self.enabled = False
+    def __init__(self, enabled: bool, to: str = "", runner=subprocess.run,
+                 platform: str = sys.platform, background: bool = True):
+        self.to = to
+        self.enabled = bool(enabled and to)
+        if self.enabled and platform != "darwin":
+            log.warning("iMessage alerts need macOS; logging alerts instead.")
+            self.enabled = False
+        self._run, self._background = runner, background
+        self._threads: list[threading.Thread] = []
 
     def send(self, text: str):
-        if not self.enabled or not self._bot:
-            logger.info(f"[NOTIFY] {text}")
+        log.info(f"[notify] {text}")
+        if not self.enabled:
             return
+        if self._background:  # never hold up the trading loop on Messages
+            th = threading.Thread(target=self._deliver, args=(text,), daemon=True)
+            th.start()
+            self._threads = [t for t in self._threads if t.is_alive()] + [th]
+        else:
+            self._deliver(text)
+
+    def flush(self, timeout: float = 20):
+        """Wait for queued messages, e.g. before the process exits."""
+        for th in self._threads:
+            th.join(timeout)
+
+    def _deliver(self, text: str):
         try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(
-                self._bot.send_message(chat_id=self.chat_id, text=text, parse_mode="Markdown")
-            )
-            loop.close()
-        except Exception as e:
-            logger.warning(f"Telegram send failed: {e}")
+            r = self._run(["osascript", "-e", _SCRIPT, text, self.to],
+                          capture_output=True, text=True, timeout=20)
+            if r.returncode != 0:
+                log.warning(f"iMessage send failed: {r.stderr.strip()}")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.warning(f"iMessage send failed: {e}")
 
-    def trade_opened(self, symbol: str, side: str, price: float, qty: float,
-                      strategy: str, confidence: float, stop: float, tp: float):
-        icon = "🟢" if side == "buy" else "🔴"
-        self.send(
-            f"{icon} *{side.upper()} {symbol}*\n"
-            f"Strategy: `{strategy}`\n"
-            f"Price: `${price:,.4f}` | Qty: `{qty:.6f}`\n"
-            f"Stop: `${stop:,.4f}` | TP: `${tp:,.4f}`\n"
-            f"ML Confidence: `{confidence:.1%}`"
-        )
+    def trade_opened(self, mode, symbol, side, volume, price, sl, tp, reason):
+        self.send(f"[{mode}] {side.upper()} {volume} {symbol} @ {price:.5g}\n"
+                  f"SL {sl:.5g}  TP {tp:.5g}\n{reason}")
 
-    def trade_closed(self, symbol: str, pnl: float, pnl_pct: float, strategy: str):
-        icon = "✅" if pnl >= 0 else "❌"
-        self.send(
-            f"{icon} *CLOSED {symbol}*\n"
-            f"Strategy: `{strategy}`\n"
-            f"PnL: `${pnl:+.4f}` (`{pnl_pct:+.2%}`)"
-        )
-
-    def kill_switch(self, reason: str):
-        self.send(f"🚨 *KILL SWITCH*\n`{reason}`\nAll trading halted.")
-
-    def model_retrained(self, version: int, accuracy: float, f1: float, samples: int):
-        self.send(
-            f"🤖 *ML Retrained v{version}*\n"
-            f"Accuracy: `{accuracy:.3f}` | F1: `{f1:.3f}`\n"
-            f"Samples: `{samples}`"
-        )
-
-    def daily_report(self, balance: float, pnl: float, win_rate: float, trades: int):
-        icon = "📈" if pnl >= 0 else "📉"
-        self.send(
-            f"{icon} *Daily Report*\n"
-            f"Balance: `${balance:,.2f}`\n"
-            f"PnL: `${pnl:+,.2f}` | Win Rate: `{win_rate:.1%}`\n"
-            f"Trades: `{trades}`"
-        )
+    def trade_closed(self, mode, symbol, profit):
+        self.send(f"[{mode}] CLOSED {symbol}  P/L {profit:+.2f}")

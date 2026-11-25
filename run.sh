@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
-# One-command launcher for Claudebot.
-# Creates a venv, installs deps, and starts the bot in paper mode.
-# Requires a running PostgreSQL (defaults: localhost:5432, user/pass postgres).
+# Creates a venv, installs requirements and starts the bot (mode from config.yaml).
 set -e
-
 cd "$(dirname "$0")"
-
-if [ ! -d "venv" ]; then
-  echo "Creating virtual environment…"
-  python3 -m venv venv
-fi
+for PY in python3.12 python3.11 python3.10 python3; do command -v "$PY" >/dev/null && break; done
+"$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+  || { echo "Python 3.10+ needed: brew install python@3.12"; exit 1; }
+[ -d venv ] || "$PY" -m venv venv
 # shellcheck disable=SC1091
 source venv/bin/activate
-
-echo "Installing dependencies…"
-pip install --quiet --upgrade "setuptools<67"
 pip install --quiet -r requirements.txt
-
-echo "Starting Claudebot (paper mode)…"
-python -m bot.main
+if command -v caffeinate >/dev/null; then
+  exec caffeinate -i python -m bot.main "$@"   # keep the Mac awake while the bot runs
+fi
+exec python -m bot.main "$@"

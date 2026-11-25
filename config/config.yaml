@@ -1,111 +1,68 @@
-# Claudebot configuration
-# Only fields here are infrastructure settings.
-# All strategy thresholds are computed automatically from market data.
+# Exness SMC scalper — MetaTrader 5
+#
+# mode:
+#   dry-run  reads live prices and logs "would BUY 0.01 XAUUSD SL… TP…", sends nothing (default).
+#            Use a READ-ONLY API key for this: then the server itself refuses orders.
+#   live     sends real orders. Needs allow_live: true AND live_account_id set to the exact
+#            account the API key trades. The Exness API has no demo/real flag, so this pin
+#            is what stops the bot trading an account you didn't mean.
+mode: dry-run
+allow_live: false
+live_account_id: ""
 
-binance:
-  testnet: false
-  max_symbols: 20            # number of top USDT pairs to trade
-  min_volume_usdt: 15000000  # minimum 24h volume in USDT to be eligible
-  timeframe: "1h"
+api:
+  user_agent: Claudebot/2.0    # Exness asks for a meaningful User-Agent
+  order_timeout_seconds: 20    # how long to wait for an order to confirm
+  deviation_points: 30         # only used on instant-execution instruments
 
-database:
-  host: localhost
-  port: 5432
-  name: claudebot
+loop_seconds: 5                # how often to poll; signals are only read on new M1 closes
+
+# Base names. Suffixed instrument names (e.g. XAUUSDm) are found automatically.
+# Sessions are in SAST (UTC+2). "always" = 24/7.
+symbols:
+  XAUUSD:
+    sessions:
+      - {days: [mon, tue, wed, thu, fri], start: "09:00", end: "22:00"}
+  BTCUSD:
+    sessions: always
+
+# SMC: M5 market structure sets the direction; M1 times the entry.
+# Long entry (shorts are the mirror):
+#   1. M5 bias is up (last break of structure was upward)
+#   2. M1 sweeps a swing low (liquidity grab)
+#   3. M1 closes above the swing high that preceded the sweep (CHoCH)
+#   4. price retraces into the fair value gap left by that move -> buy
+strategy:
+  trend_bars: 300              # M5 bars used for bias (~25h)
+  entry_bars: 150              # M1 bars scanned for the setup (~2.5h)
+  trend_swing_length: 3        # bars each side that make an M5 swing point
+  entry_swing_length: 2        # same on M1
+  max_setup_age_bars: 15       # a structure break older than this many M1 bars is stale
+  sweep_max_atr: 1.5           # deeper than this past the low = breakdown, not a sweep
+  fvg_min_atr: 0.05            # ignore gaps smaller than this fraction of ATR
+  sl_buffer_atr: 0.1           # stop sits this far beyond the sweep wick
+  min_sl_atr: 0.5              # never a stop tighter than this
+  max_sl_atr: 4.0              # skip setups needing a wider stop
+  reward_risk: 1.8             # TP = 1.8R
+  atr_period: 14
 
 risk:
-  max_portfolio_risk_pct: 0.02    # max 2% of balance at risk per trade
-  max_daily_loss_pct: 0.05        # 5% daily drawdown kills trading for the day
-  max_strategy_daily_loss_pct: 0.03
-  max_concurrent_positions: 10
-  max_positions_per_symbol: 2
-  cash_reserve_pct: 0.20          # 20% always held as cash buffer
-  atr_stop_multiplier: 1.5
-  use_kelly_sizing: true          # size by edge quality (ML win prob), capped by max_risk
-  kelly_fraction: 0.5             # half-Kelly — smoother than full-Kelly
+  risk_per_trade_pct: 0.5      # % of equity lost if the stop is hit
+  max_lots_per_trade: 0.01     # hard cap while testing; raise it deliberately
+  max_trades_per_day: 6        # per SAST day, all symbols
+  max_daily_loss_pct: 2.0      # equity drawdown from the SAST day's start that halts trading
+  max_spread_to_sl: 0.25       # skip if spread > 25% of the stop distance
+  max_open_per_symbol: 1
+  max_hold_minutes: 30         # close a scalp that hasn't resolved by then
+  kill_file: KILL              # create a file named KILL in this folder to halt new trades
 
-# Trading-cost model. Applied to every paper fill and every PnL calculation so
-# paper results mean what they say. Live fills also net these out.
-fees:
-  spot_taker: 0.001               # 0.10% per side (Binance spot, no BNB discount)
-  spot_maker: 0.001               # spot maker == taker at base tier
-  futures_taker: 0.0005           # 0.05% per side (USDT-M futures)
-  futures_maker: 0.0002           # 0.02% per side — post-only entries pay this
-  slippage_bps: 2                 # est. market-order slippage per side (basis points)
+journal:
+  path: journal/journal.db
 
-# Futures settings used when shorts go live (paper shorts are fully simulated).
-futures:
-  leverage: 2                     # conservative default
-  margin_mode: isolated           # isolate margin per position
+imessage:
+  enabled: false               # recipient (phone or Apple ID email) goes in .env as IMESSAGE_TO
 
-# Per-strategy switches. Flip any strategy on/off without touching code.
-strategies:
-  rsi_bb:              { enabled: true }
-  ema_cross:           { enabled: true }
-  funding_rate:        { enabled: true }
-  liquidation_cascade: { enabled: true }
-  pair_trading:        { enabled: true }
-  scalp:               { enabled: true }
-  grid:
-    # Disabled on evidence: the 12-month sweep found ZERO profitable
-    # geometries out of 81 (best PF 0.64, 0/3 folds positive, 1200+ trades)
-    # — high win rate, inverted payoff (wins 1 spacing, loses 3-6 when a
-    # trend runs the grid over). Live data agrees (-$63 on the last 105).
-    # Re-enable only if a future sweep finds a surviving geometry.
-    enabled: false
-
-# Advanced engine features. Every one is independently switchable so you can
-# A/B them. All default ON.
-features:
-  websocket_prices: true          # live WS price feed (ms-fresh fills + trailing)
-  short_selling: true             # act on 'sell' signals (futures shorts)
-  trailing_stops: true            # ratchet stops toward price to lock gains
-  partial_take_profit: true       # bank a slice at TP1, move stop to breakeven
-  regime_filter: true             # only run a strategy in the regime it suits
-  mtf_confirmation: true          # gate entries on the higher timeframe trend
-  sentiment_filter: true          # fear&greed + aggregate funding crowd gate
-  sharpe_sizing: true             # allocate capital by rolling risk-adjusted perf
-  htf_timeframe: "4h"             # higher timeframe used for MTF confirmation
-  tp1_ratio: 0.5                  # TP1 triggers at this fraction of the way to TP
-  tp1_close_fraction: 0.5         # close this fraction of the position at TP1
-
-ml:
-  min_trades_to_train: 50
-  model_path: "ml/models/"
-  confidence_threshold: 0.60     # ML must score a signal >= this to trade
-  retrain_every_trades: 100      # also retrains once per day automatically
-  label_min_edge: 0.0015         # a trade counts as a "win" only if it cleared
-                                 # this net % (beats fees) — fee-aware labels
-
-telegram:
-  enabled: false
-
-dashboard:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8080
-
-scalp:
-  enabled: true
-  venue: futures             # fee model used for sizing targets (futures taker ~0.05%)
-  entry_timeframe: "1m"      # signals are read here
-  trend_timeframe: "5m"      # higher-TF gate: never scalp against this trend
-  max_symbols: 8             # only scalp the most liquid pairs
-  min_volume_usdt: 50000000  # scalp only pairs with >=$50M 24h volume —
-                             # thin books gap through tight scalp stops
-  taker_fee_rate: 0.0005     # 0.05% per side (futures). Spot is ~0.001
-  scalp_time_stop_min: 15    # cut a scalp that hasn't worked in N minutes
-  sniper_mode: true          # dedicated fast loop, independent of the 60s tick
-  exit_check_seconds: 3      # bracket/trailing checked off the live WS price
-  entry_scan_seconds: 20     # setup scans per fresh 1m data (3x per candle)
-  entry_order: maker         # post-only entries: futures maker 0.02% vs taker 0.05%
-                             # (exits stay market/taker — speed matters on the way out)
-  maker_timeout_seconds: 10  # cancel an unfilled post-only entry after this long
-
-bot:
-  loop_interval_seconds: 60
-  paper_mode: true               # set to false when ready to go live
-  paper_balance_usdt: 10000      # virtual starting wallet for paper trading
-  symbol_refresh_hours: 4        # how often to re-rank tradeable symbols
-  use_tradingview: true          # keyless TradingView consensus confirmation
-  tradingview_veto_score: -0.5   # skip buys when TV consensus <= this (-1..1)
+backtest:
+  spread:                      # price units, used when the data has no spread column
+    XAUUSD: 0.20
+    BTCUSD: 15.0
