@@ -65,7 +65,7 @@ but they do count as "a position is open" on that symbol.
    ```bash
    ./run.sh
    ```
-   `run.sh` needs Python 3.10+ (`brew install python@3.12` if you don't have it). It keeps
+   `run.sh` needs Python 3.9+ (`brew install python@3.12` if you don't have it). It keeps
    the Mac awake with `caffeinate`; closing the lid still sleeps it unless it's on power with
    an external display.
 

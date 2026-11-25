@@ -1,5 +1,7 @@
 """Config loader: config/config.yaml for behaviour, .env / environment for credentials."""
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
