@@ -6,8 +6,9 @@
 #   live     sends real orders. Needs allow_live: true AND live_account_id set to the exact
 #            account the API key trades. The Exness API has no demo/real flag, so this pin
 #            is what stops the bot trading an account you didn't mean.
-mode: dry-run
-allow_live: false
+# python -m bot.setup fills live_account_id after you confirm the account number.
+mode: live
+allow_live: true
 live_account_id: ""
 
 api:

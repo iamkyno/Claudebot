@@ -52,13 +52,16 @@ but they do count as "a position is open" on that symbol.
    Save the API key, the private signing key (shown once) and the account ID. Then copy the
    **Gateway host** from the DNS widget. If you set "allowed IPs" on the key, include your
    Mac's public IP.
-2. **Fill in `.env`:**
+2. **Store and test the key:**
    ```bash
-   cp .env.example .env
+   python3 -m bot.setup
    ```
-   Then set `EXN_API_KEY`, `EXN_PRIVATE_KEY`, `EXN_ACCOUNT_ID` and `EXN_DISCOVERY_BASE_URL`.
-   `.env` is git-ignored. Keep the private key out of chats and screenshots.
-3. **Run it** (dry-run):
+   It asks for the API key, private key (hidden prompt), account ID and Gateway host, writes
+   them to `.env` (git-ignored, readable only by you), and tests them. It shows equity, the
+   instruments and live bid/ask. Then it asks you to type the account number to pin it for live
+   trading. `python3 -m bot.setup --check` re-tests later. Keep the private key out of chats and
+   screenshots.
+3. **Run it.** The config is set to `mode: live`; it refuses to trade until step 2 pins the account:
    ```bash
    ./run.sh
    ```
@@ -81,6 +84,17 @@ alert makes macOS ask whether Terminal may control Messages: allow it.
    Leave `max_lots_per_trade: 0.01`.
 4. Run `./run.sh --mode live`, watch the first 0.01-lot order appear in your Exness terminal,
    and close it if you want.
+
+## Custom indicator (MetaTrader 5)
+
+`indicators/ClaudebotSMC.mq5` draws the same setups on a chart: buy/sell arrows, the FVG box,
+and entry/SL/TP lines, with optional pop-up and MT5 mobile push alerts. It never trades.
+The Exness web terminal can't load custom indicators, so this is for Exness MetaTrader 5
+(desktop, including the official Mac app):
+
+1. In MT5: File → Open Data Folder → `MQL5/Indicators`, and copy `ClaudebotSMC.mq5` there.
+2. Open it in MetaEditor (F4) and press Compile (F7).
+3. Drag **Claudebot SMC** from the Navigator onto an M1 XAUUSD or BTCUSD chart.
 
 ## Backtest
 

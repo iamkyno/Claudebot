@@ -29,7 +29,8 @@ def check_mode(mode: str, account_id: str, cfg: dict) -> None:
         pinned = str(cfg.get("live_account_id") or "").strip()
         if pinned != str(account_id):
             raise ModeError(f"live_account_id in config.yaml ({pinned or 'not set'}) doesn't "
-                            f"match EXN_ACCOUNT_ID ({account_id}). Refusing to trade.")
+                            f"match EXN_ACCOUNT_ID ({account_id}). Refusing to trade. "
+                            "Run: python -m bot.setup")
 
 
 class DryRunExecutor:
